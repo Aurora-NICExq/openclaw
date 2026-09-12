@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { createAssistantMessageEventStream, type Model } from "openclaw/plugin-sdk/llm";
 import { Value } from "typebox/value";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { runQaGatewayFixture } from "../../test/helpers/qa-gateway-cleanup.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   configureExecutionDecisionWorkSink,
@@ -28,6 +29,11 @@ import {
 import { runWithGatewayRootWorkAdmissionForTest } from "../process/gateway-work-admission.test-helpers.js";
 import { disposeOpenClawAgentDatabaseByPath } from "../state/openclaw-agent-db.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
+
+const agentCommandFromIngress = vi.hoisted(() =>
+  vi.fn<typeof import("../commands/agent.js").agentCommandFromIngress>(),
+);
+vi.mock("../commands/agent.js", () => ({ agentCommandFromIngress }));
 
 const callGatewayMock = vi.fn();
 vi.mock("../gateway/call.js", () => ({
@@ -72,7 +78,7 @@ import {
 import { SessionManager } from "./sessions/session-manager.js";
 import { textAssistant } from "./test-helpers/sparse-transcript.test-support.js";
 import { compactToolOutputHint } from "./tool-schema-hints.js";
-import { testing as agentStepTesting } from "./tools/agent-step.test-support.js";
+import { observeSessionSendContinuations } from "./tools/agent-step.test-support.js";
 import { withGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 import { createSessionsHistoryTool } from "./tools/sessions-history-tool.js";
 import { createSessionsListTool } from "./tools/sessions-list-tool.js";
@@ -80,6 +86,7 @@ import { createSessionsSearchTool } from "./tools/sessions-search-tool.js";
 import { createSessionsSendTool } from "./tools/sessions-send-tool.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const continuations = observeSessionSendContinuations();
 
 const TEST_CONFIG = {
   session: {
@@ -299,14 +306,18 @@ describe("sessions tools", () => {
     loadSessionEntryByKeyMock.mockReset();
     loadSessionEntryByKeyMock.mockReturnValue(undefined);
     installMessagingTestRegistry();
-    agentStepTesting.setDepsForTest({
-      agentCommandFromIngress: async () => ({
-        payloads: [{ text: "ANNOUNCE_SKIP", mediaUrl: null }],
-        meta: { durationMs: 1 },
-      }),
+    agentCommandFromIngress.mockReset().mockResolvedValue({
+      payloads: [{ text: "ANNOUNCE_SKIP", mediaUrl: null }],
+      meta: { durationMs: 1 },
     });
   });
-  afterEach(resetGatewayWorkAdmission);
+  afterEach(() => runQaGatewayFixture(() => continuations.settle(), resetGatewayWorkAdmission));
+  afterAll(() =>
+    runQaGatewayFixture(
+      () => continuations.settle(),
+      () => continuations.restore(),
+    ),
+  );
 
   it("uses integer schemas for session count and window parameters", () => {
     const tools = createOpenClawTools();
@@ -1598,11 +1609,9 @@ describe("sessions tools", () => {
       }
       return {};
     });
-    agentStepTesting.setDepsForTest({
-      agentCommandFromIngress: async () => ({
-        payloads: [{ text: "announce now", mediaUrl: null }],
-        meta: { durationMs: 1 },
-      }),
+    agentCommandFromIngress.mockResolvedValue({
+      payloads: [{ text: "announce now", mediaUrl: null }],
+      meta: { durationMs: 1 },
     });
 
     const tool = getSessionTool("sessions_send", {
@@ -1702,18 +1711,16 @@ describe("sessions tools", () => {
       }
       return {};
     });
-    agentStepTesting.setDepsForTest({
-      agentCommandFromIngress: async () => {
-        finalAnnounceAdmissionClosed = isGatewaySubordinateWorkAdmissionClosed();
-        if (finalAnnounceAdmissionClosed) {
-          throw new GatewayDrainingError();
-        }
-        finalAnnounceProviderStarts += 1;
-        return {
-          payloads: [{ text: "ANNOUNCE_SKIP", mediaUrl: null }],
-          meta: { durationMs: 1 },
-        };
-      },
+    agentCommandFromIngress.mockImplementation(async () => {
+      finalAnnounceAdmissionClosed = isGatewaySubordinateWorkAdmissionClosed();
+      if (finalAnnounceAdmissionClosed) {
+        throw new GatewayDrainingError();
+      }
+      finalAnnounceProviderStarts += 1;
+      return {
+        payloads: [{ text: "ANNOUNCE_SKIP", mediaUrl: null }],
+        meta: { durationMs: 1 },
+      };
     });
 
     const tool = getSessionTool("sessions_send", {
@@ -1722,54 +1729,60 @@ describe("sessions tools", () => {
       config: cloneTestConfig(),
     });
 
-    const result = await runWithGatewayRootWorkAdmissionForTest(() =>
-      tool.execute("call-delayed", {
-        sessionKey: targetKey,
-        message: "ping",
-        timeoutSeconds: 1,
-      }),
-    );
-    const details = sessionsSendDetails(result.details);
-    expect(details.status).toBe("accepted");
-    expect(details.sessionKey).toBe(targetKey);
-    expect(details.targetDisposition).toBe("queued");
-    expect(details.delivery?.status).toBe("pending");
-    expect(details.delivery?.mode).toBe("announce");
-    expect(getActiveGatewayRootWorkCount()).toBe(1);
-    releaseDelayedWait();
+    await runQaGatewayFixture(
+      async () => {
+        const result = await runWithGatewayRootWorkAdmissionForTest(() =>
+          tool.execute("call-delayed", {
+            sessionKey: targetKey,
+            message: "ping",
+            timeoutSeconds: 1,
+          }),
+        );
+        const details = sessionsSendDetails(result.details);
+        expect(details.status).toBe("accepted");
+        expect(details.sessionKey).toBe(targetKey);
+        expect(details.targetDisposition).toBe("queued");
+        expect(details.delivery?.status).toBe("pending");
+        expect(details.delivery?.mode).toBe("announce");
+        expect(getActiveGatewayRootWorkCount()).toBe(1);
+        releaseDelayedWait();
 
-    await vi.waitFor(
-      () => {
-        expect(requesterAdmissionClosed).toBe(false);
+        await vi.waitFor(
+          () => {
+            expect(requesterAdmissionClosed).toBe(false);
+          },
+          { timeout: 2_000, interval: 5 },
+        );
+        expect(requesterProviderStarts).toBe(3);
+
+        const requesterReplyCall = calls.find(
+          (call) =>
+            call.method === "agent" &&
+            (call.params as { sessionKey?: string } | undefined)?.sessionKey === requesterKey,
+        );
+        const replyParams = requesterReplyCall?.params as
+          | {
+              extraSystemPrompt?: string;
+              inputProvenance?: { sourceSessionKey?: string };
+              message?: string;
+              sessionKey?: string;
+            }
+          | undefined;
+        expect(replyParams?.sessionKey).toBe(requesterKey);
+        expect(replyParams?.inputProvenance?.sourceSessionKey).toBe(targetKey);
+        expect(replyParams?.message).toContain("late director reply");
+        expect(replyParams?.extraSystemPrompt).toContain("Agent-to-agent reply step");
+        expect(replyParams?.extraSystemPrompt).toContain("Current agent: Agent 1 (requester)");
+        expect(calls.find((call) => call.method === "send")).toBeUndefined();
+        await vi.waitFor(() => {
+          expect(finalAnnounceAdmissionClosed).toBe(false);
+          expect(finalAnnounceProviderStarts).toBe(1);
+          expect(getActiveGatewayRootWorkCount()).toBe(0);
+        });
       },
-      { timeout: 2_000, interval: 5 },
+      releaseDelayedWait,
+      () => continuations.settle(),
     );
-    expect(requesterProviderStarts).toBe(3);
-
-    const requesterReplyCall = calls.find(
-      (call) =>
-        call.method === "agent" &&
-        (call.params as { sessionKey?: string } | undefined)?.sessionKey === requesterKey,
-    );
-    const replyParams = requesterReplyCall?.params as
-      | {
-          extraSystemPrompt?: string;
-          inputProvenance?: { sourceSessionKey?: string };
-          message?: string;
-          sessionKey?: string;
-        }
-      | undefined;
-    expect(replyParams?.sessionKey).toBe(requesterKey);
-    expect(replyParams?.inputProvenance?.sourceSessionKey).toBe(targetKey);
-    expect(replyParams?.message).toContain("late director reply");
-    expect(replyParams?.extraSystemPrompt).toContain("Agent-to-agent reply step");
-    expect(replyParams?.extraSystemPrompt).toContain("Current agent: Agent 1 (requester)");
-    expect(calls.find((call) => call.method === "send")).toBeUndefined();
-    await vi.waitFor(() => {
-      expect(finalAnnounceAdmissionClosed).toBe(false);
-      expect(finalAnnounceProviderStarts).toBe(1);
-      expect(getActiveGatewayRootWorkCount()).toBe(0);
-    });
   });
 
   it("sessions_send reports active-run queue rejection without durable-session fallback", async () => {
@@ -2478,11 +2491,9 @@ describe("sessions tools", () => {
       }
       return {};
     });
-    agentStepTesting.setDepsForTest({
-      agentCommandFromIngress: async () => ({
-        payloads: [{ text: "announce now", mediaUrl: null }],
-        meta: { durationMs: 1 },
-      }),
+    agentCommandFromIngress.mockResolvedValue({
+      payloads: [{ text: "announce now", mediaUrl: null }],
+      meta: { durationMs: 1 },
     });
 
     const tool = getSessionTool("sessions_send", {
