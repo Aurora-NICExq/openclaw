@@ -348,6 +348,7 @@ it.each([
                   nodeRunner: process.execPath,
                   version: "2026.9.3",
                   verified: false,
+                  definition: { command: { programArguments: [] }, fingerprint: "unverified" },
                   service: { serviceEnv: env },
                   packageFingerprint: originalFingerprint,
                   packageIdentity: originalFingerprint,

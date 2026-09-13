@@ -44,6 +44,7 @@ const mocks = vi.hoisted(() => ({
   restart: vi.fn(),
   capability: vi.fn(),
   nativeRestart: vi.fn(),
+  nativeInstall: vi.fn(),
   readiness: vi.fn(),
   health: vi.fn(),
   inspect: vi.fn(),
@@ -63,6 +64,7 @@ vi.mock("../../daemon/service.js", async (original) => ({
   resolveGatewayService: () => ({
     isLoaded: async () => true,
     restart: mocks.nativeRestart,
+    install: mocks.nativeInstall,
     readCommand: async () => (await mocks.state()).command,
     readRuntime: async () => ({ status: mocks.running ? "running" : "stopped" }),
   }),
@@ -342,12 +344,15 @@ it.each([
     };
   });
   if (scenario === "readiness-failed" || scenario === "windows-autostart-health-failed") {
-    mocks.health.mockResolvedValue({
-      healthy: false,
-      runtime: { status: "stopped" },
+    mocks.health.mockImplementation(async ({ expectedVersion, expectedBuildId }) => ({
+      // Keep the admission observation healthy; fail only the post-stop recovery.
+      healthy: !stopped,
+      runtime: { status: stopped ? "stopped" : "running" },
+      gatewayVersion: expectedVersion,
+      gatewayBuildId: expectedBuildId,
       staleGatewayPids: [],
       portUsage: { status: "free", port: 18789, listeners: [], hints: [] },
-    });
+    }));
   }
   let execution: Awaited<ReturnType<typeof executeMutableUpdate>> | undefined;
   let final: unknown;
@@ -446,7 +451,8 @@ it.each([
   const healthy = ["healthy", "same-version", "package-root-missing", "windows-autostart"].includes(
     scenario,
   );
-  expect(mocks.restart).toHaveBeenCalledTimes(
+  expect(mocks.restart).not.toHaveBeenCalled();
+  expect(mocks.nativeRestart).toHaveBeenCalledTimes(
     healthy || scenario === "readiness-failed" || scenario === "windows-autostart-health-failed"
       ? 1
       : 0,
@@ -697,8 +703,8 @@ it.each([
           recovery: { serviceRestartSafe: false },
         },
       });
-      expect(mocks.restart).toHaveBeenCalledTimes(scenario === "fingerprint-timeout" ? 0 : 1);
-      expect(mocks.nativeRestart).toHaveBeenCalledTimes(scenario === "fingerprint-timeout" ? 1 : 0);
+      expect(mocks.restart).not.toHaveBeenCalled();
+      expect(mocks.nativeRestart).toHaveBeenCalledOnce();
       expect(mocks.health).toHaveBeenCalledWith(
         expect.objectContaining({
           expectedVersion: "2026.9.3",

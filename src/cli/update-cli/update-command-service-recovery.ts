@@ -8,7 +8,6 @@ import {
   type GatewayService,
 } from "../../daemon/service.js";
 import { getUpdateRun, recordUpdateRunRepairAttempt } from "../../infra/update-run-ledger.js";
-import { UPDATE_RUNNER_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
 import { formatCliCommand } from "../command-format.js";
@@ -22,16 +21,16 @@ import {
   recoverInstalledLaunchAgentAfterUpdate,
   type PostUpdateLaunchAgentRecoveryResult,
 } from "./update-command-launch-agent-recovery.js";
+import { restoreOriginalManagedServiceDefinition } from "./update-command-original-service-restore.js";
 import {
   originalServiceAuthority,
   assertOriginalServiceStateCompatible,
   revalidateOriginalManagedServiceRuntime,
-  verifyPreviousGateway,
 } from "./update-command-original-service.js";
+import { verifyPreviousGatewayForUpdate } from "./update-command-readiness.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js";
 import {
   isPackageManagerUpdateMode,
-  isUpdatedInstallGatewayExecutorSupported,
   restartRetainedUpdateGatewayService,
   runUpdatedInstallGatewayCommand,
 } from "./update-command-service-command.js";
@@ -143,18 +142,6 @@ export async function recoverLaunchAgentAndRecheckGatewayHealth(params: {
   return { health, launchAgentRecovery };
 }
 
-export async function hasLoadedLaunchdKeepAliveSupervisor(params: {
-  service: GatewayService;
-  env?: NodeJS.ProcessEnv;
-}): Promise<boolean> {
-  if (process.platform !== "darwin") {
-    return false;
-  }
-  // OpenClaw's loaded LaunchAgent has canonical KeepAlive policy. Read this once before
-  // polling so an unloaded agent can still reach the existing recovery path promptly.
-  return await params.service.isLoaded({ env: params.env }).catch(() => false);
-}
-
 function formatPostUpdateGatewayRecoveryLine(platform: NodeJS.Platform): string {
   const restartCommand = formatCliCommand("openclaw gateway restart");
   const installCommand = formatCliCommand("openclaw gateway install --force");
@@ -239,6 +226,15 @@ export async function maybeRestartServiceAfterFailedMutableUpdate(params: {
       }
       assertCurrent();
     };
+    if (original && run) {
+      await restoreOriginalManagedServiceDefinition({
+        original,
+        run,
+        assertCurrent: assertOriginal,
+        stdout: params.jsonMode ? QUIET_SERVICE_STDOUT : process.stdout,
+        timeoutMs: params.timeoutMs,
+      });
+    }
     await checkOriginal();
     const service = resolveGatewayService();
     let expectedService: Pick<
@@ -281,27 +277,17 @@ export async function maybeRestartServiceAfterFailedMutableUpdate(params: {
     // the installed CLI owns its config dialect and preserves the service definition.
     const current = await readCurrentService();
     await checkOriginal();
-    // Only the retained original can use candidate-native recovery. Capability
-    // probing is read-only and must settle before checking identity again.
-    let nativeRetained = false;
-    if (original && run && executor) {
-      const supported = await isUpdatedInstallGatewayExecutorSupported({
-        root: original.root,
-        env: serviceEnv,
-        executor,
-        timeoutMs: params.timeoutMs ?? UPDATE_RUNNER_TIMEOUT_MS,
-        nodeRunner: original.nodeRunner,
-      });
-      await checkOriginal();
-      nativeRetained = !supported;
-    }
-    if (nativeRetained && original && run) {
+    // Executor capability does not bind an installed receiver's restart to A's
+    // retained definition. Use the candidate owner, which revalidates that binding
+    // under its final native-operation lock while retaining both A/B authorities.
+    if (original && run) {
       const restart = await restartRetainedUpdateGatewayService({
         run,
         root: original.root,
         env: serviceEnv,
         stdout: params.jsonMode ? QUIET_SERVICE_STDOUT : process.stdout,
         assertCurrent: assertOriginal,
+        revalidate: checkOriginal,
       });
       await checkOriginal();
       if (restart.outcome !== "completed") {
@@ -309,13 +295,12 @@ export async function maybeRestartServiceAfterFailedMutableUpdate(params: {
           "Original service restart was scheduled; recovery remains unverified.",
         );
       }
+      // A platform owner may settle a previously suspended policy only after
+      // admitted activation; the native path refuses unsupported Windows custody
+      // before reaching this restoration. Recheck the retained identity throughout.
+      await before.windowsTaskAutoStartRecovery?.restore(true, checkOriginal, assertOriginal);
+      await checkOriginal();
     } else {
-      // Only the capable receiver path may restore Windows task policy. Native
-      // fallback preserves policy and refuses Windows before any native effect.
-      if (original) {
-        await before.windowsTaskAutoStartRecovery?.restore(true, checkOriginal, assertOriginal);
-        await checkOriginal();
-      }
       await runUpdatedInstallGatewayCommand(
         {
           result: { root: original?.root ?? verdict.root },
@@ -348,13 +333,15 @@ export async function maybeRestartServiceAfterFailedMutableUpdate(params: {
     }
     await readCurrentService();
     await checkOriginal();
-    if (nativeRetained && original) {
+    if (original) {
       const context = await assertOriginalServiceStateCompatible(original, assertOriginal);
-      const ready = await verifyPreviousGateway({
+      const ready = await verifyPreviousGatewayForUpdate({
         root: original.root,
         config: context.config,
         env: context.env,
-        run: undefined,
+        opts: { run },
+        timeoutMs: params.timeoutMs,
+        assertCurrent: assertOriginal,
       });
       await checkOriginal();
       if (!ready) {

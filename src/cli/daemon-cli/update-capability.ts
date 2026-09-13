@@ -6,6 +6,7 @@ export function writeGatewayServiceUpdateCapability(): void {
       updateExecutor: GATEWAY_UPDATE_EXECUTOR_CONTRACT,
       targetRootBinding: true,
       retainedOwnerBinding: true,
+      originalDefinitionBinding: true,
     }),
   );
 }

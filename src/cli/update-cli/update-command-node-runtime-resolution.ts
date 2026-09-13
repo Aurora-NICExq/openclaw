@@ -1,5 +1,6 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import type { NodeRuntimeInstallCommand } from "../../../node-runtime-recovery.mjs";
 import { parseNodeReleaseVersion } from "../../../node-version.mjs";
 import { readResponseWithLimit } from "../../infra/http-response-body.js";
@@ -39,7 +40,7 @@ export async function resolveTargetNodeRuntime(params: {
   // An unavailable release is not permission to install a merely newer runtime.
   let nodeVersion: string | undefined;
   try {
-    const signal = AbortSignal.timeout(Math.min(params.timeoutMs ?? 30_000, 30_000));
+    const signal = AbortSignal.timeout(resolveTimerTimeoutMs(params.timeoutMs, 30_000));
     const response = await fetch("https://nodejs.org/dist/index.json", {
       signal,
       redirect: "error",

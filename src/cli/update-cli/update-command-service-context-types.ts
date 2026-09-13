@@ -1,3 +1,4 @@
+import type { GatewayServiceCommandConfig } from "../../daemon/service-types.js";
 import type {
   PackageDirectoryIdentity,
   PackageIntegrityFingerprint,
@@ -45,6 +46,7 @@ export type OriginalManagedServiceRuntime = {
   buildId?: string;
   schemaVersions?: OpenClawSchemaVersions;
   verified: boolean;
+  definition: { command: GatewayServiceCommandConfig; fingerprint: string; rebound?: string };
   service: Pick<PreManagedServiceStop, "serviceEnv" | "serviceUpdateVerdict" | "serviceManagerUid">;
   packageIdentity: PackageDirectoryIdentity;
   packageFingerprint?: PackageIntegrityFingerprint;

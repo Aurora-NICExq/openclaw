@@ -1,5 +1,6 @@
 import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
+import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import type { GatewayServiceRestartResult } from "../../daemon/service-types.js";
 import { GATEWAY_UPDATE_EXECUTOR_CONTRACT } from "../../daemon/service-update-authority.js";
 import { resolveGatewayService } from "../../daemon/service.js";
@@ -16,9 +17,11 @@ import {
 } from "./update-command-executor.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js";
 import { withRetainedUpdateServiceAuthority } from "./update-command-retained-service.js";
+import type { OriginalManagedServiceRuntime } from "./update-command-service-context-types.js";
 import { resolveUpdatedInstallCommandEnv } from "./update-command-service-env.js";
 import {
   runGatewayInstallWithLoadBoundary,
+  UpdateServiceLoadPreMutationError,
   type UpdateServiceLoadBoundary,
 } from "./update-command-service-load.js";
 
@@ -52,6 +55,7 @@ export async function isUpdatedInstallGatewayExecutorSupported(params: {
   timeoutMs: number;
   nodeRunner?: string;
   signal?: AbortSignal;
+  requireOriginalDefinitionBinding?: boolean;
 }): Promise<boolean> {
   params.signal?.throwIfAborted();
   params.executor.assertCurrent();
@@ -105,6 +109,7 @@ export async function isUpdatedInstallGatewayExecutorSupported(params: {
     !check.outputErrorStream &&
     capability?.updateExecutor === GATEWAY_UPDATE_EXECUTOR_CONTRACT &&
     capability.targetRootBinding === true &&
+    (!params.requireOriginalDefinitionBinding || capability.originalDefinitionBinding === true) &&
     (!requiresRetainedOwner || capability.retainedOwnerBinding === true)
   );
 }
@@ -124,6 +129,7 @@ export async function runUpdatedInstallGatewayCommand(
     signal?: AbortSignal;
     assertCurrent?: () => void;
     serviceLoadBoundary?: UpdateServiceLoadBoundary;
+    originalManagedServiceRuntime?: OriginalManagedServiceRuntime;
   },
   action: "install" | "restart",
   preserveDefinition = false,
@@ -170,6 +176,11 @@ export async function runUpdatedInstallGatewayCommand(
   assertCurrent();
   const boundary = params.serviceLoadBoundary;
   const installTimeoutMs = params.timeoutMs ?? UPDATE_RUNNER_TIMEOUT_MS;
+  if (installing && boundary && params.originalManagedServiceRuntime) {
+    throw new UpdateServiceLoadPreMutationError(
+      "Retained rebind requires the original definition receipt; deferred load cannot provide it.",
+    );
+  }
   if (installing && boundary) {
     return await runGatewayInstallWithLoadBoundary({
       argv: [nodeRunner, entrypoint, ...args, "--defer-activation"],
@@ -202,8 +213,15 @@ export async function runUpdatedInstallGatewayCommand(
         timeoutMs: installTimeoutMs,
         nodeRunner,
         signal: params.signal,
+        requireOriginalDefinitionBinding:
+          installing && Boolean(params.originalManagedServiceRuntime),
       }))
     ) {
+      if (installing && params.originalManagedServiceRuntime) {
+        throw new Error(
+          "Target cannot attest the original definition rewrite; original service compensation is required.",
+        );
+      }
       throw new UpdateCommandRecoveryPendingError(
         "Target runtime cannot fence update-owned native commands.",
       );
@@ -222,6 +240,12 @@ export async function runUpdatedInstallGatewayCommand(
               input: JSON.stringify({
                 executor: grant,
                 action,
+                ...(installing && params.originalManagedServiceRuntime
+                  ? {
+                      originalDefinition:
+                        params.originalManagedServiceRuntime.definition.fingerprint,
+                    }
+                  : {}),
                 targetRoot: resolveUpdateInstallRoot(params.result.root!),
               }),
               beforeInput,
@@ -248,6 +272,21 @@ export async function runUpdatedInstallGatewayCommand(
     res.cleanup !== "uncertain";
   const complete = !res.stdoutTruncatedBytes && !res.outputLimitExceeded && !res.outputErrorStream;
   const response = complete ? safeParseJsonRecord(res.stdout) : undefined;
+  const original = params.originalManagedServiceRuntime;
+  if (installing && original && exited && complete) {
+    const receipt = response && safeParseJsonRecord(JSON.stringify(response.rebind));
+    if (
+      receipt?.before === original.definition.fingerprint &&
+      typeof receipt.after === "string" &&
+      /^[a-f0-9]{64}$/.test(receipt.after)
+    ) {
+      original.definition.rebound = receipt.after;
+    } else {
+      throw new Error(
+        "Native install did not return its original-definition receipt; compensation must revalidate the unchanged original.",
+      );
+    }
+  }
   if (exited && res.code === 0) {
     return response?.action === action &&
       response.ok === true &&
@@ -283,16 +322,26 @@ export async function restartRetainedUpdateGatewayService(params: {
   env: NodeJS.ProcessEnv;
   stdout: NodeJS.WritableStream;
   assertCurrent: () => void;
+  revalidate: () => Promise<void>;
   signal?: AbortSignal;
 }): Promise<GatewayServiceRestartResult> {
   const env = { ...params.env };
   return await withRetainedUpdateServiceAuthority(params, async (assertCurrent) =>
-    resolveGatewayService().restart({
-      stdout: params.stdout,
-      env,
-      assertCurrent,
-      preserveDefinition: true,
-      preserveAutoStart: true,
+    withGatewayServiceOperationLock(env, async (assertNative) => {
+      await params.revalidate();
+      assertNative();
+      assertCurrent();
+      return await resolveGatewayService().restart({
+        stdout: params.stdout,
+        env,
+        beforeMutation: params.revalidate,
+        assertCurrent: () => {
+          assertNative();
+          assertCurrent();
+        },
+        preserveDefinition: true,
+        preserveAutoStart: true,
+      });
     }),
   );
 }

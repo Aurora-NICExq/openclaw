@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveServiceEntrypoint } from "../../daemon/service-layout.js";
+import { fingerprintGatewayServiceDefinition } from "../../daemon/service-rebind.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service-types.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { tryReadJson } from "../../infra/json-files.js";
@@ -11,21 +11,17 @@ import {
   PackageIntegrityTimeoutError,
 } from "../../infra/package-update-integrity.js";
 import { readBuiltGatewayBuildId } from "../../infra/update-git-runtime.js";
-import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
 import { defaultRuntime } from "../../runtime.js";
 import { parsePackageOpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
-import {
-  inspectGatewayRestart,
-  waitForGatewayHttpReadiness,
-} from "../daemon-cli/restart-health.js";
 import {
   captureTargetDatabaseSchemaContext,
   checkTargetDatabaseSchemasForContexts,
   hasSchemaRefusal,
 } from "./schema-preflight.js";
-import { readPackageVersion, UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
+import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
 import { captureUpdateCommandExecutorAuthority } from "./update-command-executor.js";
+import { verifyPreviousGatewayForUpdate } from "./update-command-readiness.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js";
 import type {
   OriginalManagedServiceRuntime,
@@ -33,8 +29,6 @@ import type {
 } from "./update-command-service-context-types.js";
 import { revalidateManagedGatewayServiceAfterUpdate } from "./update-command-service-maintenance.js";
 import {
-  gatewayServiceCommandUsesRoot,
-  resolveUpdatedGatewayRestartPort,
   assertGatewayServiceManagementAllowedForUpdate,
   resolveManagedServiceNodeRunner,
 } from "./update-command-service-plan.js";
@@ -129,6 +123,7 @@ export async function revalidateOriginalManagedServiceRuntime(
   original: OriginalManagedServiceRuntime,
   assertCurrent: () => void,
   timeoutMs?: number,
+  allowOwnRebind = false,
 ) {
   assertCurrent();
   const state = await readGatewayServiceState(resolveGatewayService(), {
@@ -139,15 +134,22 @@ export async function revalidateOriginalManagedServiceRuntime(
     timeoutMs,
   });
   assertCurrent();
+  const definition = await fingerprintGatewayServiceDefinition(state.command);
+  assertCurrent();
+  const ownRebind = allowOwnRebind && original.definition.rebound === definition;
+  if (definition !== original.definition.fingerprint && !ownRebind) {
+    throw new Error("Original managed service definition changed.");
+  }
+  const verifiedState = ownRebind ? { ...state, command: original.definition.command } : state;
   const verdict = await revalidateManagedGatewayServiceAfterUpdate({
-    state,
+    state: verifiedState,
     root: original.root,
     preManagedServiceStop: original.service,
   });
   assertCurrent();
   if (
     verdict.kind !== "owned" ||
-    resolveManagedServiceNodeRunner(state.command) !== original.nodeRunner ||
+    resolveManagedServiceNodeRunner(verifiedState.command) !== original.nodeRunner ||
     (await fs.realpath(verdict.root)) !== original.root ||
     original.version !== original.packageIdentity.version
   ) {
@@ -155,17 +157,25 @@ export async function revalidateOriginalManagedServiceRuntime(
   }
   assertCurrent();
   if (original.packageFingerprint) {
-    // A complete baseline must still match. A later timeout cannot downgrade it.
-    const fingerprint = await createPackageIntegrityReader(timeoutMs).tree(original.root);
-    assertCurrent();
-    if (!isDeepStrictEqual(fingerprint, original.packageFingerprint)) {
-      throw new Error("Original managed service package changed; compensation was refused.");
+    try {
+      const fingerprint = await createPackageIntegrityReader(timeoutMs).tree(original.root);
+      assertCurrent();
+      if (!isDeepStrictEqual(fingerprint, original.packageFingerprint)) {
+        throw new Error("Original managed service package changed; compensation was refused.");
+      }
+    } catch (error) {
+      assertCurrent();
+      if (!(error instanceof PackageIntegrityTimeoutError)) {
+        throw error;
+      }
+      original.packageFingerprintWarning = `Original service full package fingerprint timed out (scan budget ${error.budgetMs} ms); full package contents are unverified. Mandatory runtime identities still require revalidation.`;
+      defaultRuntime.error(original.packageFingerprintWarning);
     }
   }
   const files = await readOriginalServiceFiles({
     root: original.root,
     nodeRunner: original.nodeRunner,
-    command: state.command,
+    command: verifiedState.command,
     assertCurrent,
     timeoutMs,
   });
@@ -199,6 +209,11 @@ export async function observeOriginalManagedServiceRuntime(
     if (root === (await fs.realpath(params.root))) {
       return undefined;
     }
+    if (process.platform === "win32") {
+      throw new Error(
+        "Split-root service restoration requires persistent Windows Job custody; preserve the running service until that custody is available.",
+      );
+    }
     if (!before.serviceNodeRunner || !before.serviceEnv) {
       throw new Error("Original service Node or manager environment is unavailable.");
     }
@@ -218,11 +233,29 @@ export async function observeOriginalManagedServiceRuntime(
       assertCurrent,
       timeoutMs: params.updateStepTimeoutMs,
     });
+    if (!state.command) {
+      throw new Error("Original service definition is unavailable.");
+    }
+    if (
+      state.command.managedOverrides ||
+      state.command.managedDefinition ||
+      state.command.reloadPending
+    ) {
+      throw new Error(
+        "Original service has overrides that cannot be restored by the canonical writer.",
+      );
+    }
+    const definition = {
+      command: structuredClone(state.command),
+      fingerprint: await fingerprintGatewayServiceDefinition(state.command),
+    };
+    assertCurrent();
     const original: OriginalManagedServiceRuntime = {
       root,
       nodeRunner: before.serviceNodeRunner,
       version: files.packageIdentity.version,
       verified: false,
+      definition,
       // Disable refresh permission: recovery may use only this exact original definition.
       service: {
         serviceEnv: { ...before.serviceEnv },
@@ -254,11 +287,13 @@ export async function observeOriginalManagedServiceRuntime(
     assertCurrent();
     const context = await captureTargetDatabaseSchemaContext(before.serviceEnv);
     assertCurrent();
-    original.verified = await verifyPreviousGateway({
+    original.verified = await verifyPreviousGatewayForUpdate({
       root,
       config: context.config,
       env: context.env,
-      run: undefined,
+      opts: params.opts,
+      timeoutMs: params.updateStepTimeoutMs,
+      assertCurrent,
     });
     assertCurrent();
     if (!original.verified || !original.schemaVersions) {
@@ -307,58 +342,4 @@ export async function assertOriginalServiceStateCompatible(
     );
   }
   return context;
-}
-
-export async function verifyPreviousGateway(params: {
-  root: string;
-  config: OpenClawConfig;
-  env: NodeJS.ProcessEnv;
-  run: UpdateCommandOptions["run"];
-}): Promise<boolean> {
-  const { root, config, env, run } = params;
-  const port = await resolveUpdatedGatewayRestartPort({ config, serviceEnv: env });
-  const [expectedVersion, expectedBuildId] = await Promise.all([
-    readPackageVersion(root),
-    readBuiltGatewayBuildId(root),
-  ]);
-  const [health, readiness, servesPreviousPackage] = await Promise.all([
-    inspectGatewayRestart({
-      service: resolveGatewayService(),
-      env,
-      port,
-      expectedVersion,
-      expectedBuildId: expectedBuildId ?? undefined,
-      requirePluginHealth: false,
-    }),
-    waitForGatewayHttpReadiness({
-      config,
-      port,
-      deadlineAt: Date.now() + 3_000,
-      attempts: 1,
-      delayMs: 0,
-    }),
-    gatewayServiceCommandUsesRoot({ root, env }),
-  ]);
-  const verified = Boolean(
-    expectedVersion &&
-    servesPreviousPackage === true &&
-    health.healthy &&
-    health.runtime.status === "running" &&
-    readiness.readyz === 200,
-  );
-  if (run) {
-    recordUpdateRunStep(
-      run.runId,
-      {
-        step: "previous gateway verification",
-        status: "completed",
-        detail: verified
-          ? "Previous package is running and ready."
-          : "Previous gateway was not verified; automatic rollback cannot restart it.",
-        endedAtMs: Date.now(),
-      },
-      { env: run.env },
-    );
-  }
-  return verified;
 }

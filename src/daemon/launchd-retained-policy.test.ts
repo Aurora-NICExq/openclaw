@@ -9,10 +9,11 @@ import * as ownership from "./launchd-system.js";
 beforeEach(() => {
   vi.spyOn(ownership, "assertNoSystemLaunchDaemonOwnership").mockResolvedValue();
   vi.spyOn(currentService, "isCurrentProcessInsideLaunchdService").mockResolvedValue(false);
-  vi.spyOn(runtime, "resolveLaunchAgentGatewayContext").mockResolvedValue({
+  vi.spyOn(runtime, "resolveLaunchAgentGatewayContext").mockImplementation(async (env) => ({
+    env,
     port: null,
     probeHosts: [],
-  });
+  }));
 });
 afterEach(() => vi.restoreAllMocks());
 

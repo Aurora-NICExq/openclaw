@@ -93,7 +93,14 @@ function revoke(root: string) {
   }
 }
 function request(run: NonNullable<UpdateCommandOptions["run"]>, root = a) {
-  return { run, root, env, stdout: new PassThrough(), assertCurrent: () => undefined };
+  return {
+    run,
+    root,
+    env,
+    stdout: new PassThrough(),
+    assertCurrent: () => undefined,
+    revalidate: async () => undefined,
+  };
 }
 function owned(
   operation: (run: NonNullable<UpdateCommandOptions["run"]>) => Promise<void>,

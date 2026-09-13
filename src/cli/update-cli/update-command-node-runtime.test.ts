@@ -8,7 +8,10 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.stubGlobal("fetch", fetchMock);
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 it("uses an installed target-compatible runtime without fetching or provisioning", async () => {
   vi.mocked(findUsableNodeRuntime).mockResolvedValue({ nodePath: "/owned/node26", reason: "PATH" });
@@ -64,6 +67,27 @@ it.each(["no compatible release", "upstream unavailable", "oversized response"] 
         recovery: { env: {}, installCommand: vi.fn() },
       }),
     ).toBeUndefined();
+    expect(findUsableNodeRuntime).toHaveBeenCalledOnce();
+  },
+);
+
+it.each([
+  [undefined, 30_000],
+  [120_000, 120_000],
+  [2_000, 2_000],
+] as const)(
+  "honors runtime metadata timeout %s without extending or capping it",
+  async (timeoutMs, expected) => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    vi.mocked(findUsableNodeRuntime).mockResolvedValue(null);
+    fetchMock.mockResolvedValue(new Response("[]"));
+    await resolveTargetNodeRuntime({
+      engine: ">=26",
+      timeoutMs,
+      recovery: { env: {}, installCommand: vi.fn() },
+    });
+    expect(timeout).toHaveBeenCalledWith(expected);
+    expect(fetchMock).toHaveBeenCalledOnce();
     expect(findUsableNodeRuntime).toHaveBeenCalledOnce();
   },
 );

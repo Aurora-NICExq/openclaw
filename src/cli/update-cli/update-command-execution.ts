@@ -57,6 +57,7 @@ import {
   preparePackageDoctorContext,
   type PackageInstallUpdateParams,
 } from "./update-command-package.js";
+import { verifyPreviousGatewayForUpdate } from "./update-command-readiness.js";
 import { assertUpdateCommandRecovery } from "./update-command-recovery.js";
 import { runUpdateCommandRepair } from "./update-command-repair.js";
 import {
@@ -76,10 +77,7 @@ import {
   UpdateCommandAbort,
   type PreManagedServiceStop,
 } from "./update-command-service.js";
-import {
-  recordPreviousGatewayVerification,
-  verifyPreviousGatewayForUpdate,
-} from "./update-command-verification.js";
+import { recordPreviousGatewayVerification } from "./update-command-verification.js";
 
 export async function executeMutableUpdate(
   params: MutableUpdateExecutionParams,

@@ -32,7 +32,7 @@ import {
 } from "./update-command-result.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
-import { UpdateServiceLoadBoundaryError } from "./update-command-service-load.js";
+import { isPendingUpdateServiceLoad } from "./update-command-service-load.js";
 import { createWindowsTaskAutoStartGuard } from "./update-command-service-maintenance.js";
 import { GatewayServiceUpdateOwnershipError } from "./update-command-service-plan.js";
 import {
@@ -514,6 +514,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
     const restart = async () => {
       const restarted = await withOwnedManagedUpdateEnv(params.ownedManagedUpdateEnv, async () =>
         maybeRestartService({
+          originalManagedServiceRuntime: params.originalManagedServiceRuntime,
           shouldRestart: shouldRestart && restartContext.serviceMutationAllowed,
           result: resultWithPostUpdate,
           opts: params.opts,
@@ -710,7 +711,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
         cause: error,
       });
     }
-    if (error instanceof UpdateCommandFailure || error instanceof UpdateServiceLoadBoundaryError) {
+    if (error instanceof UpdateCommandFailure || isPendingUpdateServiceLoad(error)) {
       // Staging may already have changed files. Keep intent/material for fenced reconciliation.
       throw error;
     }
