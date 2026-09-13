@@ -63,6 +63,22 @@ Classified database errors survive transport, and canonical close joins worker
 operations and native cleanup. Cold registry restoration and runtime-configuration
 preparation still retain their existing main-thread behavior.
 
+Disk-backed silent heartbeat outcomes run their persistence and next-user claims
+in the per-agent worker. The host captures the original store before dispatch
+awaits, and admitted user runs retain their live run owner through native
+transaction settlement. Revocation refuses new grants; shutdown joins operations
+that already entered. Incognito stores, maintenance and deletion cleanup scopes, and narrower callers
+without retained run admission still use their existing native path during this
+cutover. Their migration remains unfinished.
+
+The agent worker borrows the canonical shared-state connection for its durable
+lease. Node workers can share that connection across agent lifetimes; closing
+one agent releases its borrow, and the last borrow closes the shared handle.
+Bun keeps one primary agent lifetime per worker and retires its VM before
+releasing native ownership. Existing worker, store, request, and byte budgets
+remain unchanged. Cleanup after native retirement retains the exact prepared
+lease and original shared identity; it cannot adopt replacement storage.
+
 The optional `tasks.async.managedFlows` creation and revision mutations use the
 same row kernels in the shared worker, with fresh owner, managed-mode, and
 revision checks inside write admission. The admitted operation retains its actor
