@@ -30,6 +30,7 @@ import {
   resolveRunFastModeForFallbackCandidate,
   resolveRunThinkingLevelForFallbackCandidate,
 } from "./agent-runner-utils.js";
+import { hasBlockReplyDeliveryCustody } from "./block-reply-delivery.js";
 import { beginReplyOperationFinalizationWork } from "./reply-run-finalization-lease.js";
 import {
   bindSourceReplyDeliveryRuntime,
@@ -181,6 +182,9 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
       behavior: {
         kind: "channel-delivery",
         readDeliveryEvidence: () => ({
+          hasRetryBlockedDelivery:
+            turn.blockReplyPipeline?.hasRetryBlockedDelivery() === true ||
+            params.directBlockDeliveries.some(hasBlockReplyDeliveryCustody),
           hasDirectlySentBlockReply: params.directlySentBlockKeys.size > 0,
           hasBlockReplyPipelineOutput: Boolean(
             turn.blockReplyPipeline?.hasBuffered() || turn.blockReplyPipeline?.didStream(),
@@ -277,6 +281,7 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
           contextEngineLogicalTurnLease: runOptions.contextEngineLogicalTurnLease,
           onContextEngineTurnCandidate: runOptions.onContextEngineTurnCandidate,
           assistantErrorTranscript: runOptions.assistantErrorTranscript,
+          authProfileFailurePolicy: runOptions.authProfileFailurePolicy,
           notifyUserMessagePersisted: () => {
             queuedUserMessagePersistedAcrossFallback = true;
           },

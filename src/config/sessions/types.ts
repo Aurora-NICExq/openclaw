@@ -597,11 +597,15 @@ type SessionEntryCore = SessionRestartRecoveryState &
     category?: string;
     /** Preferred Control UI face when a caller opens this session without explicit face intent. */
     boardFace?: SessionBoardFace;
+    /** Shared dashboard presentation default; absence uses the built-in split view. */
+    boardPresentation?: NonNullable<SessionRow["boardPresentation"]>;
     displayName?: string;
     /** Canonical delivery state. Legacy delivery fields are migrated by `openclaw doctor --fix`. */
     delivery?: SessionDeliveryState;
     groupId?: string;
     subject?: string;
+    /** Display-only topic name; subject remains the group name used for routing. */
+    topicName?: string;
     groupChannel?: string;
     space?: string;
     /** Last ambient room message durably appended to this transcript, keyed by channel scope. */

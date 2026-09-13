@@ -9,7 +9,7 @@ import {
   dispatchQaHttpRequest,
   writeQaRequestBodyLimitError,
 } from "../../bus-server.js";
-import { parseQaDebugRequestCursor } from "../shared/debug-request-cursor.js";
+import { resolveQaDebugRequestCursor } from "../shared/debug-request-cursor.js";
 import { writeJson } from "../shared/http-json.js";
 import {
   listMockCodexModelInfos,
@@ -57,7 +57,6 @@ import {
   QA_TOOL_LOOP_GLOBAL_BREAKER_PROMPT_RE,
   QA_PROVIDER_HTTP_503_AFTER_TOOL_PROMPT_RE,
   QA_GROUP_VISIBLE_REPLY_TOOL_PROMPT_RE,
-  QA_MSTEAMS_AMBIGUOUS_TIMEOUT_PROMPT_RE,
   QA_MSTEAMS_THREAD_DEDUPE_PROMPT_RE,
   QA_THREAD_REPLY_RECEIPT_PROMPT_RE,
   QA_A2A_MESSAGE_TOOL_MIRROR_PROMPT_RE,
@@ -72,9 +71,6 @@ import {
   QA_SLACK_CHART_PRESENTATION_PROMPT_RE,
   QA_MESSAGE_DECISION_SUPPRESSION_PROMPT_RE,
   QA_MESSAGE_DECISION_SEND_PROMPT_RE,
-  QA_SLACK_MPIM_HISTORY_RECALL_PROMPT_RE,
-  QA_SLACK_MPIM_HISTORY_SEED_PROMPT_RE,
-  buildSlackMpimHistoryBotReply,
   QA_WHATSAPP_AGENT_MESSAGE_ACTION_REACT_PROMPT_RE,
   QA_WHATSAPP_AGENT_MESSAGE_ACTION_UPLOAD_PROMPT_RE,
   QA_SUBAGENT_DIRECT_FALLBACK_PROMPT_RE,
@@ -138,6 +134,7 @@ import {
   QA_SLACK_PROGRESS_COMMENTARY_MARKER_RE,
   hasDeclaredTool,
   hasToolDefinition,
+  findNamedToolDefinition,
   isQaToolSearchFixture,
   buildExplicitSessionsSpawnArgs,
   buildQaA2aMessageToolMirrorSessionsSendArgs,
@@ -175,7 +172,7 @@ import {
   extractLatestToolOutput,
   extractAllToolOutputText,
   extractUserTextAfterLatestToolOutput,
-  extractSlackMpimRetainedBotNonce,
+  buildSlackMpimHistoryReply,
   extractUserTurnTexts,
   extractInstructionsText,
   extractAllRequestTexts,
@@ -404,36 +401,6 @@ function decodeCodeModeTarget(code: string | undefined) {
   } catch {
     return null;
   }
-}
-
-function findNamedToolDefinition(
-  value: unknown,
-  name: string,
-  depth = 0,
-): Record<string, unknown> | null {
-  if (depth > 6 || !value || typeof value !== "object") {
-    return null;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const match = findNamedToolDefinition(item, name, depth + 1);
-      if (match) {
-        return match;
-      }
-    }
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  if (record.name === name || record.tool === name || record.functionName === name) {
-    return record;
-  }
-  for (const item of Object.values(record)) {
-    const match = findNamedToolDefinition(item, name, depth + 1);
-    if (match) {
-      return match;
-    }
-  }
-  return null;
 }
 
 type CodeModeExecSurface = "native" | "guest";
@@ -947,6 +914,16 @@ function resolveCompactionSummaryFaultMode(params: {
   }
   params.servedFaultMarkers.add(selected.key);
   return selected.mode;
+}
+
+function buildMemoryGetArgs(result: Record<string, unknown>) {
+  const from =
+    typeof result.startLine === "number"
+      ? Math.max(1, result.startLine)
+      : typeof result.endLine === "number"
+        ? Math.max(1, result.endLine)
+        : 1;
+  return { path: result.path, from, lines: 4 };
 }
 
 async function buildResponsesPayload(
@@ -1927,15 +1904,6 @@ async function buildResponsesPayload(
     }
     return buildAssistantEvents("");
   }
-  if (QA_MSTEAMS_AMBIGUOUS_TIMEOUT_PROMPT_RE.test(allInputText)) {
-    if (!hasCompletedToolOutput && hasDeclaredTool(body, "message")) {
-      return buildToolCallEventsWithArgs("message", {
-        action: "send",
-        message: exactMarkerDirective ?? "QA-MSTEAMS-AMBIGUOUS-504",
-      });
-    }
-    return buildAssistantEvents("QA-MSTEAMS-AMBIGUOUS-FINAL");
-  }
   if (QA_MSTEAMS_THREAD_DEDUPE_PROMPT_RE.test(allInputText)) {
     const marker = exactMarkerDirective ?? exactReplyDirective ?? "QA-MSTEAMS-THREAD-DEDUPE-OK";
     const target = /msteams message target:\s*`([^`]+)`/iu.exec(prompt)?.[1]?.trim();
@@ -1962,19 +1930,9 @@ async function buildResponsesPayload(
   if (whatsAppStickerMarker) {
     return buildAssistantEvents(whatsAppStickerMarker);
   }
-  const slackMpimHistoryRecall = QA_SLACK_MPIM_HISTORY_RECALL_PROMPT_RE.exec(prompt);
-  if (slackMpimHistoryRecall) {
-    const [, botReplyPrefix, recalledMarker, missingMarker] = slackMpimHistoryRecall;
-    const nonce = botReplyPrefix
-      ? extractSlackMpimRetainedBotNonce(prompt, botReplyPrefix)
-      : undefined;
-    return buildAssistantEvents(
-      nonce && recalledMarker ? `${recalledMarker}_${nonce}` : (missingMarker ?? ""),
-    );
-  }
-  const slackMpimHistorySeed = QA_SLACK_MPIM_HISTORY_SEED_PROMPT_RE.exec(prompt)?.[1];
-  if (slackMpimHistorySeed) {
-    return buildAssistantEvents(buildSlackMpimHistoryBotReply(slackMpimHistorySeed));
+  const slackMpimHistoryReply = buildSlackMpimHistoryReply(prompt);
+  if (slackMpimHistoryReply !== undefined) {
+    return buildAssistantEvents(slackMpimHistoryReply);
   }
   if (/\bmarker\b/i.test(prompt) && promptExactMarkerDirective) {
     return buildAssistantEvents(promptExactMarkerDirective);
@@ -2211,17 +2169,7 @@ async function buildResponsesPayload(
       : [];
     const first = results[0];
     if (typeof first?.path === "string") {
-      const from =
-        typeof first.startLine === "number"
-          ? Math.max(1, first.startLine)
-          : typeof first.endLine === "number"
-            ? Math.max(1, first.endLine)
-            : 1;
-      return buildToolCallEventsWithArgs("memory_get", {
-        path: first.path,
-        from,
-        lines: 4,
-      });
+      return buildToolCallEventsWithArgs("memory_get", buildMemoryGetArgs(first));
     }
   }
   if (isActiveMemorySubagentPrompt(allInputText) && isSnackRecallPrompt(allInputText)) {
@@ -2262,17 +2210,7 @@ async function buildResponsesPayload(
       : [];
     const first = results[0];
     if (typeof first?.path === "string" && hasDeclaredTool(body, "memory_get")) {
-      const from =
-        typeof first.startLine === "number"
-          ? Math.max(1, first.startLine)
-          : typeof first.endLine === "number"
-            ? Math.max(1, first.endLine)
-            : 1;
-      return buildToolCallEventsWithArgs("memory_get", {
-        path: first.path,
-        from,
-        lines: 4,
-      });
+      return buildToolCallEventsWithArgs("memory_get", buildMemoryGetArgs(first));
     }
     const memorySnippet = Array.isArray(toolJson?.results)
       ? JSON.stringify(toolJson.results)
@@ -2332,17 +2270,7 @@ async function buildResponsesPayload(
       typeof first?.path === "string" &&
       (typeof first.startLine === "number" || typeof first.endLine === "number")
     ) {
-      const from =
-        typeof first.startLine === "number"
-          ? Math.max(1, first.startLine)
-          : typeof first.endLine === "number"
-            ? Math.max(1, first.endLine)
-            : 1;
-      return buildToolCallEventsWithArgs("memory_get", {
-        path: first.path,
-        from,
-        lines: 4,
-      });
+      return buildToolCallEventsWithArgs("memory_get", buildMemoryGetArgs(first));
     }
     return buildAssistantEvents("NONE");
   }
@@ -2387,17 +2315,7 @@ async function buildResponsesPayload(
         typeof first?.path === "string" &&
         (typeof first.startLine === "number" || typeof first.endLine === "number")
       ) {
-        const from =
-          typeof first.startLine === "number"
-            ? Math.max(1, first.startLine)
-            : typeof first.endLine === "number"
-              ? Math.max(1, first.endLine)
-              : 1;
-        return buildToolCallEventsWithArgs("memory_get", {
-          path: first.path,
-          from,
-          lines: 4,
-        });
+        return buildToolCallEventsWithArgs("memory_get", buildMemoryGetArgs(first));
       }
     }
     const memoryGetText =
@@ -2980,28 +2898,13 @@ export async function startQaMockOpenAiServer(params?: {
           writeJson(res, 200, requests);
           return;
         }
-        const after = parseQaDebugRequestCursor(afterText);
-        if (after === null) {
-          writeJson(res, 400, { error: "after must be a non-negative safe integer" });
-          return;
-        }
-        const latestCursor = nextRequestCursor - 1;
-        const oldestCursor = requests[0]?.cursor ?? nextRequestCursor;
-        if (after > latestCursor) {
-          writeJson(res, 409, {
-            error: "request cursor is ahead of the latest recorded request",
-            after,
-            latestCursor,
-          });
-          return;
-        }
-        if (after < oldestCursor - 1) {
-          writeJson(res, 409, {
-            error: "request cursor expired",
-            after,
-            oldestCursor,
-            latestCursor,
-          });
+        const after = resolveQaDebugRequestCursor(
+          afterText,
+          requests[0]?.cursor ?? nextRequestCursor,
+          nextRequestCursor - 1,
+        );
+        if (typeof after !== "number") {
+          writeJson(res, after.status, after.body);
           return;
         }
         writeJson(

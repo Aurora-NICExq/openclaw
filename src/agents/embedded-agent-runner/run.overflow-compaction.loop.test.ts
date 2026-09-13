@@ -401,7 +401,7 @@ describe("embedded run retry dispatch", () => {
     },
   );
 
-  it.each(["gateway", "run", "lane"] as const)(
+  it.each(["gateway", "run", "lane", "attempt"] as const)(
     "fences publication discovery when the %s owner retires",
     async (owner) => {
       const input = makeDispatchInput({}, createEmbeddedRunReplayState());
@@ -413,6 +413,16 @@ describe("embedded run retry dispatch", () => {
           current = {} as GatewayRequestContext;
         } else if (owner === "lane") {
           input.runInput.laneController.laneTaskAbortController.abort(new Error("lane cancelled"));
+        } else if (owner === "attempt") {
+          const replacement = input.runInput.laneController.createAttemptControls({
+            admittedRunContext,
+          });
+          try {
+            expect(replacement.isCurrent()).toBe(true);
+            return assertCurrent();
+          } finally {
+            replacement.close();
+          }
         } else {
           admission.close();
         }
