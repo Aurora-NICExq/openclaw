@@ -153,6 +153,9 @@ suite.define(() => {
           await waitForControlUiGatewayReady(page);
           const composer = page.locator(".agent-chat__input").first();
           const model = composer.locator("[data-chat-model-select]");
+          // Gateway connection precedes history hydration; an aria-disabled summary
+          // deliberately refuses clicks, unlike a native disabled button.
+          await expect.poll(() => model.getAttribute("aria-disabled")).toBe("false");
           await model.click();
           // A failed background refresh must not add chrome above a usable list.
           await composer.locator('[data-chat-model-option="openai/gpt-5.4"]').waitFor();

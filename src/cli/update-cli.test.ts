@@ -472,6 +472,7 @@ vi.mock("../process/exec.js", async (importOriginal) => {
               updateExecutor: "root-spawner-v1",
               targetRootBinding: true,
               retainedOwnerBinding: true,
+              originalDefinitionBinding: true,
             }),
             stderr: "",
             signal: null,
@@ -479,6 +480,28 @@ vi.mock("../process/exec.js", async (importOriginal) => {
             termination: "exit" as const,
             cleanup: "normal" as const,
           };
+        }
+        const input: unknown =
+          typeof options.input === "string" && options.input
+            ? JSON.parse(options.input)
+            : undefined;
+        const originalDefinition = isRecord(input) ? input.originalDefinition : undefined;
+        if (typeof originalDefinition === "string") {
+          const { fingerprintGatewayServiceDefinition } =
+            await import("../daemon/service-rebind.js");
+          const before = await fingerprintGatewayServiceDefinition(
+            await serviceReadCommand(options.env),
+          );
+          expect(before).toBe(originalDefinition);
+          const result = await commandTransport.run(argv, options);
+          // Explicit response fixtures retain malformed/missing-receipt coverage.
+          if (result.code !== 0 || result.stdout.trim()) {
+            return result;
+          }
+          const after = await fingerprintGatewayServiceDefinition(
+            await serviceReadCommand(options.env),
+          );
+          return { ...result, stdout: JSON.stringify({ rebind: { before, after } }) };
         }
         return await commandTransport.run(argv, options);
       } finally {
@@ -12089,13 +12112,14 @@ describe("update-cli", () => {
   });
 
   it.each([
-    { busyPackage: false, alreadyCurrent: false, wrongOriginal: false },
-    { busyPackage: true, alreadyCurrent: false, wrongOriginal: false },
-    { busyPackage: false, alreadyCurrent: true, wrongOriginal: false },
-    { busyPackage: false, alreadyCurrent: false, wrongOriginal: true },
+    { busyPackage: false, alreadyCurrent: false, wrongOriginal: false, overriddenOriginal: false },
+    { busyPackage: true, alreadyCurrent: false, wrongOriginal: false, overriddenOriginal: false },
+    { busyPackage: false, alreadyCurrent: true, wrongOriginal: false, overriddenOriginal: false },
+    { busyPackage: false, alreadyCurrent: false, wrongOriginal: true, overriddenOriginal: false },
+    { busyPackage: false, alreadyCurrent: false, wrongOriginal: false, overriddenOriginal: true },
   ])(
-    "updates the invoking package and rebinds its owned Gateway after a Node-prefix switch (busy B=$busyPackage, current B=$alreadyCurrent, wrong A=$wrongOriginal)",
-    async ({ busyPackage, alreadyCurrent, wrongOriginal }) => {
+    "updates the invoking package and rebinds its owned Gateway after a Node-prefix switch (busy B=$busyPackage, current B=$alreadyCurrent, wrong A=$wrongOriginal, override=$overriddenOriginal)",
+    async ({ busyPackage, alreadyCurrent, wrongOriginal, overriddenOriginal }) => {
       const invokingVersion = alreadyCurrent ? "2026.5.20" : "2026.5.18";
       const oldInstall = await setupServicePackageAtPrefix({
         prefix: tempDirs.make("openclaw-node-a-"),
@@ -12113,7 +12137,16 @@ describe("update-cli", () => {
       });
       // A must be observed independently before B is activated.
       mockGatewayHealth(wrongOriginal ? "0.0.0" : "2026.5.18", "retained-node-A");
-      primeServiceCommand([oldInstall.serviceNode, oldInstall.entrypoint, "gateway"]);
+      // Canonical readers omit managedDefinition unless an operator override exists.
+      const originalCommand = {
+        programArguments: [oldInstall.serviceNode, oldInstall.entrypoint, "gateway"],
+      };
+      serviceReadCommand.mockResolvedValue({
+        ...originalCommand,
+        ...(overriddenOriginal
+          ? { managedDefinition: originalCommand, managedOverrides: { environment: true } }
+          : {}),
+      });
       serviceLoaded.mockResolvedValue(true);
       serviceReadRuntime.mockResolvedValue({
         status: "running",
@@ -12129,11 +12162,13 @@ describe("update-cli", () => {
         npmCommands: ["npm", newInstall.serviceNpm, requireValue(newInstall.serviceNpmReal, "npm")],
         nodeVersions: { [oldInstall.serviceNode]: "v24.19.0" },
         onGatewayInstall: (argv) =>
-          primeServiceCommand([
-            requireValue(argv[0], "Node"),
-            requireValue(argv[1], "entrypoint"),
-            "gateway",
-          ]),
+          serviceReadCommand.mockResolvedValue({
+            programArguments: [
+              requireValue(argv[0], "Node"),
+              requireValue(argv[1], "entrypoint"),
+              "gateway",
+            ],
+          }),
       });
 
       const { createManagedHandoffLeaseStore } =
@@ -12182,7 +12217,7 @@ describe("update-cli", () => {
         }
         return await rename(from, to);
       });
-      if (wrongOriginal) {
+      if (wrongOriginal || overriddenOriginal) {
         await expect(updateCommand({ yes: true })).rejects.toEqual(new ExitError(1));
         expect(getLogOutput() + getErrorOutput()).toContain("original-service-unverified");
         expect(serviceStop).not.toHaveBeenCalled();

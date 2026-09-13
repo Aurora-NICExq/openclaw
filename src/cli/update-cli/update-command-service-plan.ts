@@ -307,19 +307,21 @@ export async function resolveManagedServicePackageUpdatePlan(params: {
     layout.entrypointSourceCheckout !== true &&
     (await tryRealpathOrResolve(params.root)) !== layout.packageRootReal
   ) {
-    const capability =
-      params.rebind === false
-        ? undefined
-        : await service
-            .readDefinitionMutationCapability?.({
-              env: process.env,
-              environment: mergeGatewayServiceEnv(process.env, command),
-              requireLoaded: true,
-            })
-            .catch(() => ({ kind: "unknown", reason: "inspection-failed" }) as const);
+    // Windows cannot retain Job custody across a split-root rebind yet. Update
+    // the existing service installation without entering that unsupported path.
+    const allowRebind = params.rebind !== false && process.platform !== "win32";
+    const capability = !allowRebind
+      ? undefined
+      : await service
+          .readDefinitionMutationCapability?.({
+            env: process.env,
+            environment: mergeGatewayServiceEnv(process.env, command),
+            requireLoaded: true,
+          })
+          .catch(() => ({ kind: "unknown", reason: "inspection-failed" }) as const);
     // A protected definition can still activate an updated package at its current root.
     // Preserve that existing path; this observation does not grant later mutation authority.
-    const canRebind = params.rebind !== false && (capability?.kind ?? "writable") === "writable";
+    const canRebind = allowRebind && (capability?.kind ?? "writable") === "writable";
     return {
       ...(!canRebind
         ? { rootRedirect: { root: serviceRoot, previousRoot: params.root } }
