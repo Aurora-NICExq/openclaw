@@ -11848,7 +11848,7 @@ describe("update-cli", () => {
     );
   });
 
-  it.each(["sealed", "unknown"] as const)(
+  it.each(["sealed", "unknown", "writable-overridden"] as const)(
     "preserves split-root package updates when the service definition is %s",
     async (kind) => {
       const oldInstall = await setupServicePackageAtPrefix({
@@ -11871,9 +11871,18 @@ describe("update-cli", () => {
         state: "running",
       });
       serviceDefinitionMutationCapability.mockResolvedValue({
-        kind,
+        kind: kind === "writable-overridden" ? "writable" : kind,
         reason: kind === "sealed" ? "foreign-owner" : "inspection-failed",
       });
+      const overriddenCommand = {
+        programArguments: originalCommand,
+        environment: { NODE_OPTIONS: "--max-old-space-size=4096" },
+        managedDefinition: { programArguments: originalCommand },
+        managedOverrides: { environment: { keys: ["NODE_OPTIONS"] } },
+      };
+      if (kind === "writable-overridden") {
+        serviceReadCommand.mockResolvedValue(overriddenCommand);
+      }
       primeNpmChannelTag("latest", "2026.5.20");
       mockFileBackedPathExists();
       const transports = [oldInstall, shellInstall].map((install) => {
@@ -11908,9 +11917,29 @@ describe("update-cli", () => {
         JSON.parse(await fs.readFile(path.join(shellInstall.root, "package.json"), "utf8")).version,
       ).toBe("2026.5.18");
       expect((await serviceReadCommand(process.env)).programArguments).toEqual(originalCommand);
-      expect(
-        commandCalls().filter(([argv]) => argv[2] === "gateway" && argv[3] === "install"),
-      ).toEqual([]);
+      if (kind === "writable-overridden") {
+        expect(await serviceReadCommand(process.env)).toEqual(overriddenCommand);
+      }
+      const installCalls = commandCalls().filter(
+        ([argv]) => argv[2] === "gateway" && argv[3] === "install",
+      );
+      if (kind === "writable-overridden") {
+        expect(installCalls).toHaveLength(1);
+        expect(installCalls[0]?.[0].slice(0, 4)).toEqual([
+          oldInstall.serviceNode,
+          oldInstall.entrypoint,
+          "gateway",
+          "install",
+        ]);
+        expect(installCalls[0]?.[1]).toEqual(
+          expect.objectContaining({
+            cwd: oldInstall.root,
+            input: expect.stringContaining('"targetRoot":' + JSON.stringify(oldInstall.root)),
+          }),
+        );
+      } else {
+        expect(installCalls).toEqual([]);
+      }
       expect(serviceStop).toHaveBeenCalledOnce();
       expect(getLogOutput()).toContain("Gateway: restarted and verified");
     },
@@ -12118,7 +12147,7 @@ describe("update-cli", () => {
     { busyPackage: false, alreadyCurrent: false, wrongOriginal: true, overriddenOriginal: false },
     { busyPackage: false, alreadyCurrent: false, wrongOriginal: false, overriddenOriginal: true },
   ])(
-    "updates the invoking package and rebinds its owned Gateway after a Node-prefix switch (busy B=$busyPackage, current B=$alreadyCurrent, wrong A=$wrongOriginal, override=$overriddenOriginal)",
+    "updates the invoking package and rebinds its owned Gateway after a Node-prefix switch (busy B=$busyPackage, current B=$alreadyCurrent, wrong A=$wrongOriginal, late override=$overriddenOriginal)",
     async ({ busyPackage, alreadyCurrent, wrongOriginal, overriddenOriginal }) => {
       const invokingVersion = alreadyCurrent ? "2026.5.20" : "2026.5.18";
       const oldInstall = await setupServicePackageAtPrefix({
@@ -12141,12 +12170,7 @@ describe("update-cli", () => {
       const originalCommand = {
         programArguments: [oldInstall.serviceNode, oldInstall.entrypoint, "gateway"],
       };
-      serviceReadCommand.mockResolvedValue({
-        ...originalCommand,
-        ...(overriddenOriginal
-          ? { managedDefinition: originalCommand, managedOverrides: { environment: true } }
-          : {}),
-      });
+      serviceReadCommand.mockResolvedValue(originalCommand);
       serviceLoaded.mockResolvedValue(true);
       serviceReadRuntime.mockResolvedValue({
         status: "running",
@@ -12206,6 +12230,14 @@ describe("update-cli", () => {
       );
       candidateValidation.mockImplementation(async (...args) => {
         assertRootsOwned();
+        if (overriddenOriginal) {
+          // An override introduced after planning must still block unsafe rebind.
+          serviceReadCommand.mockResolvedValue({
+            ...originalCommand,
+            managedDefinition: originalCommand,
+            managedOverrides: { environment: true },
+          });
+        }
         return await validate(...args);
       });
       const rename = fs.rename;
@@ -12219,7 +12251,14 @@ describe("update-cli", () => {
       });
       if (wrongOriginal || overriddenOriginal) {
         await expect(updateCommand({ yes: true })).rejects.toEqual(new ExitError(1));
-        expect(getLogOutput() + getErrorOutput()).toContain("original-service-unverified");
+        expect(getLogOutput() + getErrorOutput()).toContain(
+          overriddenOriginal ? "managed-service-preflight" : "original-service-unverified",
+        );
+        if (overriddenOriginal) {
+          expect(getLogOutput() + getErrorOutput()).toContain(
+            "Gateway service definition changed after database admission",
+          );
+        }
         expect(serviceStop).not.toHaveBeenCalled();
         expect(publicationChecks).toEqual([]);
         expect(freshRestartCalls()).toEqual([]);

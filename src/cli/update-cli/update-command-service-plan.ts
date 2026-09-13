@@ -307,9 +307,13 @@ export async function resolveManagedServicePackageUpdatePlan(params: {
     layout.entrypointSourceCheckout !== true &&
     (await tryRealpathOrResolve(params.root)) !== layout.packageRootReal
   ) {
-    // Windows cannot retain Job custody across a split-root rebind yet. Update
-    // the existing service installation without entering that unsupported path.
-    const allowRebind = params.rebind !== false && process.platform !== "win32";
+    // Windows lacks retained Job custody; operator overrides cannot be restored
+    // by the canonical writer. Keep both on the existing service installation.
+    const allowRebind =
+      params.rebind !== false &&
+      process.platform !== "win32" &&
+      !command?.managedOverrides &&
+      !command?.managedDefinition;
     const capability = !allowRebind
       ? undefined
       : await service

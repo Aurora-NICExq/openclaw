@@ -64,6 +64,28 @@ describe("managed service root planning", () => {
     });
     expect(service.readDefinitionMutationCapability).not.toHaveBeenCalled();
   });
+  it.each(["managedOverrides", "managedDefinition"] as const)(
+    "preserves writable operator definitions through service-root fallback (%s)",
+    async (field) => {
+      const f = await fixture();
+      vi.stubGlobal("process", { ...process, platform: "linux" });
+      const command = {
+        programArguments: [f.nodeRunner, path.join(f.serviceRoot, "dist", "index.js"), "gateway"],
+        environment: { NODE_OPTIONS: "--max-old-space-size=4096" },
+      };
+      service.readCommand.mockResolvedValue({
+        ...command,
+        ...(field === "managedDefinition"
+          ? { managedDefinition: command }
+          : { managedOverrides: { environment: { keys: ["NODE_OPTIONS"] } } }),
+      });
+      expect(await resolveManagedServicePackageUpdatePlan({ root: f.invokingRoot })).toEqual({
+        rootRedirect: { root: f.serviceRoot, previousRoot: f.invokingRoot },
+        nodeRunner: f.nodeRunner,
+      });
+      expect(service.readDefinitionMutationCapability).not.toHaveBeenCalled();
+    },
+  );
   it.each(["darwin", "linux"])("keeps writable split-prefix rebinds on %s", async (platform) => {
     const f = await fixture();
     vi.stubGlobal("process", { ...process, platform });
