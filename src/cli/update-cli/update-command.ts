@@ -81,16 +81,14 @@ export async function updateCommand(inputOpts: UpdateCommandOptions): Promise<vo
     });
   }
   return await withUpdateAdmissionReporting(inputOpts, async () => {
-    const admission = {
+    const env = await resolveUpdateCommandAdmissionEnv({
       opts: inputOpts,
       root:
         prepared.servicePlan?.serviceRoot ??
         prepared.servicePlan?.rootRedirect?.root ??
         prepared.discoveredRoot,
       invocationCwd,
-      timeoutMs: prepared.timeoutMs,
-    };
-    const env = await resolveUpdateCommandAdmissionEnv(admission);
+    });
     const { updateStateNeedsInitialization } = await import("./update-command-initialization.js");
     if (await updateStateNeedsInitialization(env)) {
       return await initializeAndRunUpdate(inputOpts, prepared, recoveryState, invocationCwd, env);
@@ -514,6 +512,7 @@ async function updateCommandInternal(
     startedAt,
     controlPlaneUpdateSentinelMeta,
     packageUpdateNodeRunner: packageUpdateNodeRunner ?? managedServiceNodeRunner,
+    packageInstallSpec,
     runtimeTarget: packageRuntimeTarget,
     managedServiceRootRedirect,
     managedServiceRoot,
