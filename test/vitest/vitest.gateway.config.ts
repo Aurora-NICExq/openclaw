@@ -1,3 +1,5 @@
+import { defineConfig } from "vitest/config";
+import { createGatewayDatabaseWorkersVitestConfig } from "./vitest.gateway-database-workers.config.ts";
 import {
   gatewayDatabaseWorkerTestFiles,
   gatewayMethodsIsolatedTestFiles,
@@ -33,10 +35,23 @@ export function createGatewayVitestConfig(env?: Record<string, string | undefine
   });
 }
 
-function createGatewayProjectShardVitestConfig() {
-  return createProjectShardVitestConfig(gatewayProjectConfigs);
+export function createGatewayProjectShardVitestConfig(
+  env: Record<string, string | undefined> = process.env,
+) {
+  const aggregate = createProjectShardVitestConfig(gatewayProjectConfigs);
+  if (env.OPENCLAW_GATEWAY_PROJECT_SHARDS !== "0") {
+    return aggregate;
+  }
+  return defineConfig({
+    ...aggregate,
+    test: {
+      ...aggregate.test,
+      projects: [
+        { ...createGatewayVitestConfig(env), extends: false },
+        { ...createGatewayDatabaseWorkersVitestConfig(env), extends: false },
+      ],
+    },
+  });
 }
 
-export default process.env.OPENCLAW_GATEWAY_PROJECT_SHARDS === "0"
-  ? createGatewayVitestConfig()
-  : createGatewayProjectShardVitestConfig();
+export default createGatewayProjectShardVitestConfig();

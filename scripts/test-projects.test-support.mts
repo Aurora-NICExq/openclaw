@@ -3955,6 +3955,7 @@ export function buildVitestRunPlans(
     relative: toRepoRelativeTarget(targetArg, cwd),
     kind: classifyTarget(targetArg, cwd),
   }));
+  const hasGatewayAggregateTarget = classifiedTargets.some(({ kind }) => kind === "gateway");
   const explicitConfigTargets = classifiedTargets.map(({ relative }) => relative);
   const impliedDatabaseWorkerTargets = databaseWorkerCoreTestFiles.filter((file) =>
     [...requestedTargetArgs, ...activeTargetArgs].some((targetArg) => {
@@ -3989,6 +3990,9 @@ export function buildVitestRunPlans(
     }
     return explicitConfigTargets
       .filter((config) => !hasE2eTarget || config !== PACKAGE_CONTRACT_VITEST_CONFIG)
+      .filter(
+        (config) => !hasGatewayAggregateTarget || config !== GATEWAY_DATABASE_WORKERS_VITEST_CONFIG,
+      )
       .flatMap((config) =>
         createBoundedExtensionPlans(
           {
@@ -4018,10 +4022,10 @@ export function buildVitestRunPlans(
       continue;
     }
 
-    // Package builds clean shared outputs. Mixed E2E selections keep their
-    // original serial owner instead of introducing a concurrent artifact writer.
+    // A requested Gateway aggregate already owns its worker tests. Watch also
+    // keeps that aggregate; mixed E2E selections retain their serial build owner.
     const kind =
-      watchMode && targetKind === "gatewayDatabaseWorkers"
+      targetKind === "gatewayDatabaseWorkers" && (watchMode || hasGatewayAggregateTarget)
         ? "gateway"
         : hasE2eTarget && targetKind === "packageContract"
           ? "e2e"
@@ -4030,7 +4034,9 @@ export function buildVitestRunPlans(
     current.push(
       ...(hasE2eTarget && relative === PACKAGE_CONTRACT_VITEST_CONFIG
         ? packageContractTestFiles
-        : [targetArg]),
+        : kind === "gateway" && relative === GATEWAY_DATABASE_WORKERS_VITEST_CONFIG
+          ? gatewayDatabaseWorkerTestFiles
+          : [targetArg]),
     );
     groupedTargets.set(kind, current);
   }
