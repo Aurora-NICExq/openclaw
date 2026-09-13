@@ -22,6 +22,7 @@ import { UpdateRequesterRevokedError } from "../../infra/update-requester-author
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
+import { UPDATE_ACTIVATION_TIMEOUT_REASON } from "../../shared/update-outcome.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { printResult } from "./progress.js";
@@ -364,6 +365,22 @@ export function recordUpdateResultNextAction(
     recordUpdateRunPhase(run.runId, active.phase, { origin: { nextAction } }, { env: run.env });
   }
   return nextAction;
+}
+
+/** Finalization includes recovery, restart, and completion without masking activation timeout. */
+export function completePostUpdateResult(
+  params: Pick<FinishUpdateParams, "rollbackBlockedReason" | "startedAt">,
+  result: UpdateRunResult,
+): UpdateRunResult {
+  return {
+    ...result,
+    ...(result.status === "error" &&
+    result.reason !== UPDATE_ACTIVATION_TIMEOUT_REASON &&
+    params.rollbackBlockedReason
+      ? { reason: params.rollbackBlockedReason }
+      : {}),
+    durationMs: Math.max(0, Date.now() - params.startedAt),
+  };
 }
 
 /** Construct the ordinary post-update failure without changing its recovery owner. */

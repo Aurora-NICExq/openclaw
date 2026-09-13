@@ -22,6 +22,7 @@ import { repairUpdateService } from "./update-command-repair-service.js";
 import { prepareUpdateRestart } from "./update-command-restart-context.js";
 import {
   buildPostUpdateFailureResult,
+  completePostUpdateResult,
   markControlPlaneUpdateRestartSentinelFailureBestEffort,
   UpdateCommandFailure,
   UpdateCommandPendingRecoveryFailure,
@@ -110,14 +111,6 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
       pendingRestartAtMs = undefined;
     }
   };
-  // Finalization owns the complete outcome, including recovery, restart, and completion work.
-  const completedResult = (result: UpdateRunResult): UpdateRunResult => ({
-    ...result,
-    ...(result.status === "error" && params.rollbackBlockedReason
-      ? { reason: params.rollbackBlockedReason }
-      : {}),
-    durationMs: Math.max(0, Date.now() - params.startedAt),
-  });
   const recordNextAction = (result: UpdateRunResult) => {
     assertCurrent();
     return recordUpdateResultNextAction(params, result);
@@ -130,7 +123,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
   let pendingNotify = true;
   const publishFinalResult = async (failure?: unknown): Promise<UpdateRunResult> => {
     const settled = await resolveSettledUpdateCommandResult(params, pendingResult, failure);
-    const result = completedResult(settled.result);
+    const result = completePostUpdateResult(params, settled.result);
     result.recovery = settled.settlementFailed ? undefined : result.recovery;
     const reportDowntime = !settled.settlementFailed && pendingRestartAtMs === undefined;
     if (pendingNotify) {
@@ -247,7 +240,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
     );
     assertCurrent();
     let restoreFailure = initialRestoreFailure;
-    const finalResult = completedResult({
+    const finalResult = completePostUpdateResult(params, {
       ...result,
       ...(result.status === "error" && !recoverService && !rolledBack
         ? {
@@ -385,7 +378,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
       ? await recordVerifiedUpdatePackageCleanup(params, finalResult, assertCurrent)
       : undefined;
     assertCurrent();
-    pendingResult = completedResult(cleanupFailure?.result ?? finalResult);
+    pendingResult = completePostUpdateResult(params, cleanupFailure?.result ?? finalResult);
     const reportedResult = deferredTerminal ? pendingResult : await publishFinalResult();
     if (cleanupFailure) {
       const { detail } = cleanupFailure;

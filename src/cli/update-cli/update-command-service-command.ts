@@ -5,6 +5,7 @@ import { GATEWAY_UPDATE_EXECUTOR_CONTRACT } from "../../daemon/service-update-au
 import { resolveGatewayService } from "../../daemon/service.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
+import { UPDATE_RUNNER_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { resolveNodeRunner, type UpdateCommandOptions } from "./shared.js";
@@ -21,7 +22,6 @@ import {
   type UpdateServiceLoadBoundary,
 } from "./update-command-service-load.js";
 
-const SERVICE_REFRESH_TIMEOUT_MS = 60_000;
 export const DEFINITION_DENIAL = /\bSERVICE_DEFINITION_(?:SEALED|UNKNOWN):[^\n]*/;
 
 /** The installed CLI observed failed health after accepting activation, not a refusal. */
@@ -49,6 +49,7 @@ export async function isUpdatedInstallGatewayExecutorSupported(params: {
   root: string;
   env: NodeJS.ProcessEnv;
   executor: UpdateRecoveryFence;
+  timeoutMs: number;
   nodeRunner?: string;
   signal?: AbortSignal;
 }): Promise<boolean> {
@@ -80,7 +81,7 @@ export async function isUpdatedInstallGatewayExecutorSupported(params: {
           baseEnv: {},
           cwd: params.root,
           env: { ...params.env, OPENCLAW_NO_RESPAWN: "1" },
-          timeoutMs: 30_000,
+          timeoutMs: params.timeoutMs,
           killProcessTree: true,
           requireProcessTreeExtinction: true,
           ...(params.signal ? { signal: params.signal } : {}),
@@ -168,12 +169,14 @@ export async function runUpdatedInstallGatewayCommand(
   params.signal?.throwIfAborted();
   assertCurrent();
   const boundary = params.serviceLoadBoundary;
+  const installTimeoutMs = params.timeoutMs ?? UPDATE_RUNNER_TIMEOUT_MS;
   if (installing && boundary) {
     return await runGatewayInstallWithLoadBoundary({
       argv: [nodeRunner, entrypoint, ...args, "--defer-activation"],
       cwd: params.result.root,
       env: commandEnv,
       signal: params.signal,
+      timeoutMs: installTimeoutMs,
       boundary: {
         ...boundary,
         // The handoff adds an executor fence; it must not replace the repair owner.
@@ -196,6 +199,7 @@ export async function runUpdatedInstallGatewayCommand(
         root: params.result.root,
         env: commandEnv,
         executor,
+        timeoutMs: installTimeoutMs,
         nodeRunner,
         signal: params.signal,
       }))
@@ -225,8 +229,7 @@ export async function runUpdatedInstallGatewayCommand(
           : {}),
         cwd: params.result.root,
         env: commandEnv,
-        // Restart owns migration-aware readiness; only refresh has the fixed watchdog.
-        timeoutMs: installing ? SERVICE_REFRESH_TIMEOUT_MS : params.timeoutMs,
+        timeoutMs: installing ? installTimeoutMs : params.timeoutMs,
         ...(params.signal ? { signal: params.signal } : {}),
         killProcessTree: true,
         requireProcessTreeExtinction: true,

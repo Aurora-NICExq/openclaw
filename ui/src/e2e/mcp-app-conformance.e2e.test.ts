@@ -876,15 +876,18 @@ suite.define(() => {
               const responses: Array<{
                 url: string;
                 pathname: string;
+                version: string | null;
                 status: number;
                 cacheControl: string | undefined;
               }> = [];
               historyObservations.responses = responses;
               historyPage.on("response", (response) => {
                 if (response.url().includes("mcp-app")) {
+                  const url = new URL(response.url());
                   responses.push({
                     url: response.url(),
-                    pathname: new URL(response.url()).pathname,
+                    pathname: url.pathname,
+                    version: url.searchParams.get("v"),
                     status: response.status(),
                     cacheControl: response.headers()["cache-control"],
                   });
@@ -925,13 +928,11 @@ suite.define(() => {
               expect(
                 historyEvents.filter((event) => event.event === "response-written"),
               ).toMatchObject([{ id: historyCallId, isError: false }]);
-              for (const [pathname, cacheControl] of [
-                ["/__openclaw__/mcp-app", "no-store"],
-                ["/__openclaw__/mcp-app/view", "no-store"],
-                ["/mcp-app-sandbox", "public, max-age=31536000, immutable"],
-              ] as const) {
+              for (const pathname of ["/__openclaw__/mcp-app", "/__openclaw__/mcp-app/view"]) {
                 expect(responses.filter((response) => response.pathname === pathname)).toEqual(
-                  expect.arrayContaining([expect.objectContaining({ status: 200, cacheControl })]),
+                  expect.arrayContaining([
+                    expect.objectContaining({ status: 200, cacheControl: "no-store" }),
+                  ]),
                 );
               }
               const shells = responses.filter(
@@ -947,6 +948,7 @@ suite.define(() => {
                 // Bind the browser response to this source generation's public shell,
                 // not merely to the presence of an arbitrary version query parameter.
                 expect(url.href).toBe(selected.href);
+                expect(shell.version).toMatch(/^[a-f0-9]{64}$/);
                 expect(shell.status).toBe(200);
                 expect(shell.cacheControl).toBe(
                   selected.searchParams.has("v")

@@ -22,7 +22,7 @@ import { stageManagedHandoffRuntime } from "../../infra/update-managed-service-h
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { isChildProcessTreeAlive } from "../../process/child-process-tree.js";
 import { runUtf8CommandWithTimeout } from "../../process/exec.js";
-import { waitForPidToExit } from "../../test-utils/process-tree.js";
+import { killPidIfAlive, waitForPidToExit } from "../../test-utils/process-tree.js";
 import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
 import {
   captureUpdateCommandExecutorAuthority,
@@ -732,8 +732,8 @@ describe("candidate executor delegation", () => {
         );
       } finally {
         if (descendant) {
-          process.kill(descendant, "SIGTERM");
-          await waitForPidToExit(descendant);
+          killPidIfAlive(descendant);
+          expect(await waitForPidToExit(descendant)).toBe(true);
         }
       }
     },

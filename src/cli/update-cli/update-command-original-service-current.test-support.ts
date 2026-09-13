@@ -243,6 +243,7 @@ export function registerCurrentF3Controls(fixture: () => Fixture) {
           expect.objectContaining({
             root: rootA,
             executor: run.executorFence,
+            timeoutMs: 30_000,
             nodeRunner: process.execPath,
           }),
         );

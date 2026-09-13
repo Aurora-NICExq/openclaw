@@ -27,6 +27,16 @@ export const updateExecutorNativeEntrypoints = {
     sourceWorkerName: "update-command-executor",
     distWorkerPath: "cli/update-cli/update-command-executor.js",
   },
+  migratedFinalize: {
+    currentModuleUrl,
+    sourceWorkerName: "../../infra/update-migrated-finalize.worker",
+    distWorkerPath: "infra/update-migrated-finalize.worker.js",
+  },
+  doctorResult: {
+    currentModuleUrl,
+    sourceWorkerName: "../../infra/update-doctor-result",
+    distWorkerPath: "infra/update-doctor-result.js",
+  },
   processExec: {
     currentModuleUrl,
     sourceWorkerName: "../../process/exec",
@@ -51,11 +61,6 @@ export const updateExecutorNativeEntrypoints = {
     currentModuleUrl,
     sourceWorkerName: "../../daemon/service-update-authority",
     distWorkerPath: "daemon/service-update-authority.js",
-  },
-  doctorResult: {
-    currentModuleUrl,
-    sourceWorkerName: "../../infra/update-doctor-result",
-    distWorkerPath: "infra/update-doctor-result.js",
   },
   configIO: {
     currentModuleUrl,

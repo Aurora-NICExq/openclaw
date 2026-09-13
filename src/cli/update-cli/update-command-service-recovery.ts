@@ -8,6 +8,7 @@ import {
   type GatewayService,
 } from "../../daemon/service.js";
 import { getUpdateRun, recordUpdateRunRepairAttempt } from "../../infra/update-run-ledger.js";
+import { UPDATE_RUNNER_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
 import { formatCliCommand } from "../command-format.js";
@@ -288,6 +289,7 @@ export async function maybeRestartServiceAfterFailedMutableUpdate(params: {
         root: original.root,
         env: serviceEnv,
         executor,
+        timeoutMs: params.timeoutMs ?? UPDATE_RUNNER_TIMEOUT_MS,
         nodeRunner: original.nodeRunner,
       });
       await checkOriginal();
