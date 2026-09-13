@@ -32,6 +32,7 @@ import { remapSkillReferencePaths } from "../sandbox-skills.js";
 import { prepareEmbeddedSkills } from "../skill-runtime.js";
 import { mapThinkingLevelForProvider } from "../utils.js";
 import { prepareExecApprovalContinuationForAttempt } from "./attempt-exec-approval-continuation.js";
+import { prepareGitHubAvailability } from "./attempt-github-availability.js";
 import { applyResolvedToolPromptFinalizer } from "./attempt-prompt-support.js";
 import { EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE } from "./attempt-stage-timing.js";
 import { resolveAttemptDispatchApiKey } from "./auth-store.js";
@@ -389,30 +390,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     },
   });
   const pluginRefresh = captureAgentPluginRuntimeRefresh();
-  let githubPublicationAvailable = params.githubPublicationAvailable;
-  const resolveGatewayContext = getGatewayContextResolver(admittedRunContext);
-  const gatewayContext = resolveGatewayContext?.();
-  if (
-    githubPublicationAvailable === undefined &&
-    gatewayContext &&
-    !gatewayContext.localEmbedded &&
-    resolvedSessionKey &&
-    !params.disableTools &&
-    !params.modelRun &&
-    params.promptMode !== "none"
-  ) {
-    // Chat and background agent entries share this preparation owner. A standalone
-    // runner must not discover a nearby Gateway or revive a retired run.
-    const { prepareGitHubPublicationAvailability } =
-      await import("../../../gateway/github-publication-availability.js");
-    githubPublicationAvailable = await prepareGitHubPublicationAvailability({
-      agentId: workspaceResolution.agentId,
-      sessionId,
-      sessionKey: resolvedSessionKey,
-      assertCurrent: () =>
-        resolveGatewayContext?.() === gatewayContext && attemptControls.isCurrent(),
-    });
-  }
+  const githubAvailable = await prepareGitHubAvailability(runInput, sessionId, attemptControls);
   const attemptParams: EmbeddedRunAttemptInternalParams = {
     pluginRuntimeRefreshPending: pluginRefresh.isPending,
     registerPluginRuntimeRefreshConsumer: (isCurrent) => {
@@ -440,7 +418,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     clientCaps: params.clientCaps,
     pinnedWidgetAuthoring: params.pinnedWidgetAuthoring,
     toolBindings: params.toolBindings,
-    githubPublicationAvailable,
+    githubPublicationAvailable: githubAvailable,
     chatType: params.chatType,
     agentAccountId: params.agentAccountId,
     conversationRoutePeerId: params.conversationRoutePeerId,
