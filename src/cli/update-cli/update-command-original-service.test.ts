@@ -61,6 +61,7 @@ vi.mock("../../daemon/service.js", async (original) => ({
   ...(await original<typeof import("../../daemon/service.js")>()),
   readGatewayServiceState: mocks.state,
   resolveGatewayService: () => ({
+    isLoaded: async () => true,
     restart: mocks.nativeRestart,
     readCommand: async () => (await mocks.state()).command,
     readRuntime: async () => ({ status: mocks.running ? "running" : "stopped" }),
@@ -132,6 +133,7 @@ beforeEach(async () => {
       JSON.stringify({ buildId: root === rootA ? "build-A" : "build-B" }),
     );
   }
+  await fs.copyFile(process.execPath, state.path("selected-B-node"));
   const coordinator = state.path("coordinator");
   await fs.mkdir(coordinator);
   vi.spyOn(temporaryRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(coordinator);

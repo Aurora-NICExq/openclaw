@@ -11929,7 +11929,7 @@ describe("update-cli", () => {
       const serviceNode = currentRunner ? process.execPath : fixture.serviceNode;
       const replacementNode = path.join(tempDirs.make("replacement-runtime-"), "bin", "node");
       await fs.mkdir(path.dirname(replacementNode), { recursive: true });
-      await fs.writeFile(replacementNode, "", { mode: 0o755 });
+      await fs.copyFile(process.execPath, replacementNode);
       mockPackageInstallStatus(fixture.root);
       primeServiceCommand([serviceNode, fixture.entrypoint, "gateway"]);
       serviceLoaded.mockResolvedValue(true);
