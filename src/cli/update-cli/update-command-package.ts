@@ -86,6 +86,7 @@ type PackageDoctorOptions = {
         inputHash: string;
         changes: UpdateDoctorConfigChange[];
         assertCurrent: () => void;
+        assertBoundChildCurrent: () => void;
       }
     | undefined;
 };
@@ -98,6 +99,7 @@ export function preparePackageDoctorContext(params: {
   inputHash?: string | null;
   changes: UpdateDoctorConfigChange[];
   assertCurrent: () => void;
+  assertBoundChildCurrent: () => void;
 }) {
   params.assertCurrent();
   if (!params.capable) {
@@ -113,6 +115,7 @@ export function preparePackageDoctorContext(params: {
     inputHash: params.inputHash ?? hashConfigRaw(null),
     changes: params.changes,
     assertCurrent: params.assertCurrent,
+    assertBoundChildCurrent: params.assertBoundChildCurrent,
   };
 }
 
@@ -161,7 +164,6 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
     ? await readUpdateConfigSnapshot(resolveConfigPath(doctorEnv))
     : undefined;
   const runDoctor = (executor?: UpdateCommandChildGrant, beforeInput?: (pid: number) => void) => {
-    context?.assertCurrent();
     const input: UpdateDoctorInput | undefined =
       context && executor
         ? {
@@ -208,14 +210,18 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
         : {}),
     });
   };
+  // Admission is a parent operation; once delegated, only the child binder may
+  // check native custody until the process tree settles and the parent resumes.
+  context?.assertCurrent();
   const doctorStep = context
     ? await withUpdateCommandExecutorChild(context.executorFence, params.root, (grant, bindChild) =>
         runDoctor(grant, (pid) => {
-          context.assertCurrent();
           bindChild(pid);
+          context.assertBoundChildCurrent();
         }),
       )
     : await runDoctor();
+  context?.assertCurrent();
   const doctorResult = await consumeUpdatePostInstallDoctorResult(doctorResultPath);
   if (configSnapshot) {
     // Only the child writer can attribute bytes to Doctor; a later read may contain an operator save.

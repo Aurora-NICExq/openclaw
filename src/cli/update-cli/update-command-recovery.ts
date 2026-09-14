@@ -1,4 +1,5 @@
 import { formatErrorMessage } from "../../infra/errors.js";
+import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
 import {
   loadUpdateRecovery,
@@ -16,6 +17,10 @@ export class UpdateCommandRecoveryPendingError extends Error {
 /** Refuse retained recovery before any package-only effects or diagnostic writes. */
 export function assertUpdateCommandRecovery(opts: UpdateCommandOptions): void {
   opts.run?.executorFence?.assertCurrent();
+  assertUpdateCommandRecoveryState(opts);
+}
+
+function assertUpdateCommandRecoveryState(opts: UpdateCommandOptions): void {
   if (opts.recovery) {
     throw new UpdateCommandRecoveryPendingError(
       "Full-state checkpoint recovery is deferred; retained state was left unchanged.",
@@ -27,6 +32,36 @@ export function assertUpdateCommandRecovery(opts: UpdateCommandOptions): void {
       throw new UpdateRecoveryRequiredError(current);
     }
   }
+}
+
+/** Pin the invocation across parent work and the separately bound Doctor child. */
+export function createUpdateCommandExecutionGuards(opts: UpdateCommandOptions) {
+  const run = opts.run;
+  const executor = run?.executorFence;
+  const requester = run?.requesterAuthority;
+  const assertInvocation = () => {
+    if (
+      opts.run !== run ||
+      run?.executorFence !== executor ||
+      run?.requesterAuthority !== requester ||
+      requester?.isCurrent() === false
+    ) {
+      throw new UpdateRequesterRevokedError();
+    }
+  };
+  return {
+    assertCurrent: () => {
+      assertInvocation();
+      executor?.assertCurrent();
+      assertUpdateCommandRecoveryState(opts);
+    },
+    // This is not native authority. The Doctor caller must first bind its child
+    // through the real executor, which checks both retained and candidate owners.
+    assertBoundChildCurrent: () => {
+      assertInvocation();
+      assertUpdateCommandRecoveryState(opts);
+    },
+  };
 }
 
 /** Package-only finalization cannot adopt a retained full-state claim. */

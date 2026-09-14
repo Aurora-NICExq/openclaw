@@ -1,10 +1,10 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
-import { trackInspectedAnimations } from "./animation-tracker.test-support.ts";
 import {
   captureUiProofEnabled,
   createChatFlowE2eSuite,
+  expectDefined,
   installMockGateway,
   waitForChatScrollIdle,
 } from "./chat-flow.test-support.ts";
@@ -14,7 +14,7 @@ const suite = createChatFlowE2eSuite();
 
 suite.define(() => {
   it.each(["no-preference", "reduce"] as const)(
-    "folds task progress smoothly without an abrupt start (%s)",
+    "pauses and seeks task progress smoothly, then reverses without a jump (%s)",
     async (reducedMotion) => {
       const proofDir = captureUiProofEnabled
         ? path.join(suite.artifactDir, "session-progress-motion", reducedMotion)
@@ -84,33 +84,69 @@ suite.define(() => {
           await page.waitForTimeout(400);
         }
 
-        // Native details content lives in the UA shadow tree, outside
-        // Element.getAnimations(). The inspector freezes its real CSS timeline
-        // so curve assertions do not depend on runner frame rate or sleeps.
+        // Resolve the native details slot once: its animations are outside the
+        // card's getAnimations(), and inspector animation IDs are weak references.
         const inspector = await context.newCDPSession(page);
-        const observed = trackInspectedAnimations(inspector);
+        const { root } = await inspector.send("DOM.getDocument");
+        const { nodeId } = await inspector.send("DOM.querySelector", {
+          nodeId: root.nodeId,
+          selector: '[data-progress-card-placement="composer"] .session-progress-card__body',
+        });
+        const { node } = await inspector.send("DOM.describeNode", { nodeId });
+        const { object } = await inspector.send("DOM.resolveNode", {
+          backendNodeId: expectDefined(node.assignedSlot, "native details content slot")
+            .backendNodeId,
+        });
+        const objectId = expectDefined(object.objectId, "native details content handle");
+        const evaluateContent = async (
+          evaluate: (this: Element, time: number) => unknown,
+          time = 0,
+        ): Promise<unknown> => {
+          const { result, exceptionDetails } = await inspector.send("Runtime.callFunctionOn", {
+            objectId,
+            functionDeclaration: evaluate.toString(),
+            arguments: [{ value: time }],
+            returnByValue: true,
+          });
+          expect(exceptionDetails).toBeUndefined();
+          return result.value;
+        };
+        const contentIsRunning = () =>
+          evaluateContent(function () {
+            return this.getAnimations().some(
+              (animation) =>
+                animation instanceof CSSTransition &&
+                animation.transitionProperty === "height" &&
+                animation.playState === "running",
+            );
+          });
+        const seekContent = (time: number) =>
+          evaluateContent(function (currentTime) {
+            for (const animation of this.getAnimations()) {
+              animation.pause();
+              animation.currentTime = currentTime;
+            }
+          }, time);
         await inspector.send("Animation.enable");
         await inspector.send("Animation.setPlaybackRate", { playbackRate: 0 });
         await card.locator("summary").click();
-        await page.evaluate(
-          () =>
-            new Promise<void>((resolve) => {
-              requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-            }),
-        );
+        await expect.poll(() => card.getAttribute("open")).toBeNull();
         if (reducedMotion === "no-preference") {
-          await expect
-            .poll(() => [...observed.values()].some((animation) => animation.name === "height"))
-            .toBe(true);
+          await expect.poll(contentIsRunning).toBe(true);
         }
-        const duration =
-          [...observed.values()].find((animation) => animation.name === "height")?.source
-            ?.duration ?? 0;
-        const ids = () => {
-          const active = [...observed.values()];
-          expect(active.some((animation) => animation.name === "height")).toBe(true);
-          return active.map((animation) => animation.id);
-        };
+        const duration = await evaluateContent(function () {
+          return (
+            this.getAnimations()
+              .find(
+                (animation) =>
+                  animation instanceof CSSTransition && animation.transitionProperty === "height",
+              )
+              ?.effect?.getTiming().duration ?? 0
+          );
+        });
+        if (typeof duration !== "number") {
+          throw new Error("Expected a numeric disclosure animation duration");
+        }
         const samples: Array<{ height: number; opacity: number }> = [];
         const sample = () =>
           card.evaluate((element) => ({
@@ -119,16 +155,12 @@ suite.define(() => {
           }));
         if (duration) {
           for (const fraction of [0, 0.25, 0.5, 0.75]) {
-            await inspector.send("Animation.seekAnimations", {
-              animations: ids(),
-              currentTime: duration * fraction,
-            });
+            await seekContent(duration * fraction);
             samples.push(await sample());
           }
-          await inspector.send("Animation.seekAnimations", {
-            animations: ids(),
-            currentTime: duration * 0.25,
-          });
+          // Completed sibling transitions must not be retained by the test driver.
+          await inspector.send("HeapProfiler.collectGarbage");
+          await seekContent(duration * 0.25);
         } else {
           samples.push(await sample());
         }
@@ -156,24 +188,11 @@ suite.define(() => {
             expect(samples[index]!.height).toBeLessThanOrEqual(samples[index - 1]!.height);
           }
           const reversingFrom = await cardHeight();
-          observed.clear();
           await card.locator("summary").click();
-          await page.evaluate(
-            () =>
-              new Promise<void>((resolve) => {
-                requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-              }),
-          );
-          await expect
-            .poll(() => [...observed.values()].some((animation) => animation.name === "height"))
-            .toBe(true);
+          await expect.poll(() => card.getAttribute("open")).toBe("");
+          await expect.poll(contentIsRunning).toBe(true);
           expect(Math.abs((await cardHeight()) - reversingFrom)).toBeLessThanOrEqual(1);
-          if (observed.size) {
-            await inspector.send("Animation.setPaused", {
-              animations: [...observed.keys()],
-              paused: false,
-            });
-          }
+          await inspector.send("HeapProfiler.collectGarbage");
           await inspector.send("Animation.setPlaybackRate", { playbackRate: 1 });
           await expect.poll(cardHeight).toBe(before);
         }

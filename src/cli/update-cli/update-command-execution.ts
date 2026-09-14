@@ -17,7 +17,6 @@ import {
   canResolveRegistryVersionForPackageTarget,
   verifyPackageUpdateRecovery,
 } from "../../infra/update-global.js";
-import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { readCurrentGitUpdateRecovery } from "../../infra/update-runner-git-recovery.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
@@ -58,7 +57,10 @@ import {
   type PackageInstallUpdateParams,
 } from "./update-command-package.js";
 import { verifyPreviousGatewayForUpdate } from "./update-command-readiness.js";
-import { assertUpdateCommandRecovery } from "./update-command-recovery.js";
+import {
+  assertUpdateCommandRecovery,
+  createUpdateCommandExecutionGuards,
+} from "./update-command-recovery.js";
 import { runUpdateCommandRepair } from "./update-command-repair.js";
 import {
   createUpdateCommandFailureResult,
@@ -101,12 +103,8 @@ export async function executeMutableUpdate(
     });
   const originalRun = opts.run;
   const requesterAuthority = originalRun?.requesterAuthority;
-  const assertExecutionCurrent = () => {
-    assertUpdateCommandRecovery(opts);
-    if (opts.run !== originalRun || requesterAuthority?.isCurrent() === false) {
-      throw new UpdateRequesterRevokedError();
-    }
-  };
+  const { assertCurrent: assertExecutionCurrent, assertBoundChildCurrent } =
+    createUpdateCommandExecutionGuards(opts);
   const mode: UpdateRunResult["mode"] =
     params.updateInstallKind === "git"
       ? "git"
@@ -189,6 +187,7 @@ export async function executeMutableUpdate(
       inputHash: validatedConfigSnapshot?.hash,
       changes: doctorConfigChanges,
       assertCurrent: assertExecutionCurrent,
+      assertBoundChildCurrent,
     });
   const originalRecovery = () =>
     params.installKind === "git"
