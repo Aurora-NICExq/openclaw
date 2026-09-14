@@ -289,6 +289,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
           {
             activeRunId: props.runId,
             readingHistory: props.readingHistory,
+            onManipulate: props.onProgressManipulate,
             completedRunId: props.runStatus?.phase === "done" ? props.runStatus.runId : null,
           },
         )}

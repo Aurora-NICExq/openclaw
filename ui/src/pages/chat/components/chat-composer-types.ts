@@ -94,6 +94,7 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   runActive?: boolean;
   collapseTaskProgress?: boolean;
   readingHistory?: boolean;
+  onProgressManipulate?: () => void;
   runId?: string | null;
   onDismissProgressCard?: (card: ProgressCard) => void;
   gatewayQuestionPrompts?: readonly QuestionPrompt[];

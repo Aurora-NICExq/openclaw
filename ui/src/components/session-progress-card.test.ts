@@ -534,6 +534,50 @@ describe("renderSessionProgressCard", () => {
     expect(card.open).toBe(true);
   });
 
+  it("holds a partial wheel choice across revisions and final, then resets it for a new task/session", () => {
+    const container = document.createElement("div");
+    const show = (
+      sessionKey: string,
+      activeRunId: string | null,
+      completedRunId: string | null,
+      revision = 1,
+    ) =>
+      render(
+        renderSessionProgressCard(
+          { ...progressCard, sessionKey, revision },
+          "composer",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          true,
+          true,
+          { activeRunId, completedRunId },
+        ),
+        container,
+      );
+    show("agent:main:first", "one", null);
+    const card = container.querySelector<HTMLDetailsElement>("details")!;
+    const header = card.querySelector("summary")!;
+    header.dispatchEvent(new WheelEvent("wheel", { deltaY: -48, bubbles: true, cancelable: true }));
+    expect(card.open).toBe(true);
+    expect(card.querySelector<HTMLElement>(".session-progress-card__body")!.style.height).toBe(
+      "48px",
+    );
+    show("agent:main:first", "one", null, 2);
+    show("agent:main:first", null, "one", 3);
+    expect(card.querySelector<HTMLElement>(".session-progress-card__body")!.style.height).toBe(
+      "48px",
+    );
+    show("agent:main:first", "two", null, 4);
+    expect(card.open).toBe(false);
+    header.dispatchEvent(new WheelEvent("wheel", { deltaY: -32, bubbles: true, cancelable: true }));
+    expect(card.open).toBe(true);
+    show("agent:main:second", "three", null);
+    expect(card.open).toBe(false);
+    expect(card.querySelector<HTMLElement>(".session-progress-card__body")!.style.height).toBe("");
+  });
+
   it("keeps the collapsed counter in the summary action column", () => {
     const container = document.createElement("div");
     render(renderSessionProgressCard(progressCard, "composer"), container);

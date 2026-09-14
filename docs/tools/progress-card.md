@@ -95,6 +95,10 @@ The current chat keeps exactly one live card, in the collapsible surface inside 
 
 The composer card automatically folds into its current-step summary when you scroll away from the latest messages and expands when you return to the bottom. Manually expanding or collapsing it keeps that choice for the current task, including progress updates and the final response. A new run, a different session, or a cleared-and-recreated card starts with automatic behavior again. The existing **Collapse task progress by default** preference still keeps active work compact; without a manual override, its matching final expands the card only when you are at the bottom.
 
+Drag upward on the composer card’s header, or scroll upward while the pointer is over it, to reveal more of the panel. Move downward to close it. The panel follows the distance you move: stopping holds a partial opening, and reversing moves it back without a timed animation or release snap. This also works with a touch drag on the header. The note and checklist keep their normal scrolling and links.
+
+Click the header, or focus it and press Enter or Space, to open or close the whole card. A partial opening is a manual choice for the current task: new output, card revisions, and the final response do not finish or undo it. Direct manipulation also pauses transcript following; use **Latest** or scroll back toward the latest messages to resume. New tasks and session changes restore the normal automatic behavior.
+
 Transient refresh failures retain the last loaded card. The dashboard widget shows a retry notice until a refresh succeeds. If the Gateway reports that the connection no longer participates in the session, clients hide the card until access is restored and a refresh succeeds.
 
 The composer and dashboard placements show the local time of the last progress update. The hovercard instead shows the current-or-next plan step and its completed/total count, followed by Markdown in a separate Agent Notepad when a note is present.

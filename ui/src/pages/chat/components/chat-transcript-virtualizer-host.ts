@@ -587,7 +587,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     return true;
   }
 
-  private cancelScroll(): void {
+  cancelScroll(): void {
     this.endAnchor.clear();
     this.prependAnchor.clear();
     if (this.offsetState.scrollCommand === null && !this.offsetState.pendingScrollOffset) {

@@ -64,7 +64,7 @@ import {
 import { resolveChatLinkFaviconFetcher } from "./link-favicon-loader.ts";
 import { activeQueuedMessageEdit } from "./queued-message-edit.ts";
 import { hasAbortableSessionRun, hasDirectSessionRun } from "./run-lifecycle.ts";
-import { scheduleChatScroll } from "./scroll.ts";
+import { lockChatScroll, scheduleChatScroll } from "./scroll.ts";
 import { resolveChatProjectionRunId } from "./tool-stream-status.ts";
 import { workspaceResultConflictFromPlacement } from "./workspace-conflict.ts";
 
@@ -397,6 +397,10 @@ export class ChatPane extends ChatPaneLayoutRender {
       progressCard: this.progressCard.card,
       collapseTaskProgress: state.settings.chatCollapseTaskProgress === true,
       readingHistory: state.chatReadingHistory,
+      onProgressManipulate: () => {
+        lockChatScroll(state);
+        this.transcript.cancelScroll();
+      },
       onDismissProgressCard,
       gatewayQuestionPrompts:
         catalogKey || sessionParticipationBlocked
