@@ -567,7 +567,14 @@ describe.runIf(nativeIntegrationEnabled)("schtasks Windows integration", () => {
 
     // Source workers resolve tsx from the task cwd; give the isolated fixture its dependencies.
     await fs.symlink(path.resolve("node_modules"), path.join(rootDir, "node_modules"), "junction");
-    await writeGatewayTaskSupervisorProbe({ activePidPath, eventsPath, probe, stateDir });
+    const sourceTsconfigPath = path.resolve("tsconfig.json");
+    await writeGatewayTaskSupervisorProbe({
+      activePidPath,
+      eventsPath,
+      probe,
+      sourceTsconfigPath,
+      stateDir,
+    });
 
     let testFailed = false;
     let testError: unknown;
@@ -606,7 +613,7 @@ describe.runIf(nativeIntegrationEnabled)("schtasks Windows integration", () => {
             OPENCLAW_SERVICE_KIND: "gateway",
             OPENCLAW_SERVICE_MARKER: "openclaw",
             // Source aliases belong to the checkout, even when the task runs outside it.
-            TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"),
+            TSX_TSCONFIG_PATH: sourceTsconfigPath,
           },
           description: `OpenClaw CI Scheduled Task integration ${id}`,
         });
