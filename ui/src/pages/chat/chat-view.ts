@@ -210,15 +210,12 @@ export function renderChat(props: ChatProps) {
               }
             : undefined,
         onOpenSession: props.onSessionSelect,
-        onFocusComposer: () => {
-          if (chatSection?.isConnected) {
-            chatSection
-              .querySelector<HTMLElement>(
-                "openclaw-plugin-view[data-plugin-composer], .agent-chat__composer-combobox > textarea",
-              )
-              ?.focus({ preventScroll: true });
-          }
-        },
+        onFocusComposer: () =>
+          chatSection
+            ?.querySelector<HTMLElement>(
+              "openclaw-plugin-view[data-plugin-composer], .agent-chat__composer-combobox > textarea",
+            )
+            ?.focus({ preventScroll: true }),
       },
       props.transcript,
     ),
@@ -319,11 +316,7 @@ export function renderChat(props: ChatProps) {
   return html`
     <section
       ${ref((element) => {
-        // An open menu retains this render's focus callback. Lit clears replaced
-        // refs on rerender; retain the section while it is still connected.
-        if (element instanceof HTMLElement) {
-          chatSection = element;
-        }
+        chatSection = element instanceof HTMLElement ? element : null;
       })}
       class="card chat"
       style=${styleMap(

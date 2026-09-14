@@ -19,22 +19,19 @@ import {
   resolveUpdateCommandChildBinding,
   type UpdateCommandChildGrant,
 } from "./update-command-executor-grant.js";
+import type {
+  ChildOperation,
+  ChildPurpose,
+  ManagedUpdateLeaseAuthority,
+  UpdateCommandExecutor,
+} from "./update-command-executor.types.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js";
 
 export type { UpdateCommandChildGrant } from "./update-command-executor-grant.js";
+export type { UpdateCommandExecutor } from "./update-command-executor.types.js";
 
-/** A live invocation, never a serialized claim, PID or recovered history row. */
-export type UpdateCommandExecutor = {
-  /** Acquire only after read-only service admission, before the first mutable phase. */
-  enter(
-    root: string,
-    options?: { preflight?: true; serviceRoot?: string; activationTimeoutMs?: number },
-  ): Promise<UpdateRecoveryFence>;
-};
-
-type ManagedUpdateLeaseAuthority = ManagedUpdateLeaseDatabaseIdentity &
-  Readonly<{ installKey: string; owner: string }>;
 const admittedAuthorities = new WeakMap<UpdateRecoveryFence, ManagedUpdateLeaseAuthority>();
+const admittedRunIds = new WeakMap<UpdateRecoveryFence, string>();
 const retainedOwners = new WeakMap<UpdateRecoveryFence, string>();
 
 /** Compatibility requirement from a live admission, never a serialized claim. */
@@ -55,10 +52,11 @@ export function assertRetainedUpdateCommandRoot(fence: UpdateRecoveryFence, root
 
 export function captureUpdateCommandExecutorAuthority(
   fence: UpdateRecoveryFence,
+  expectedRunId?: string,
 ): ManagedUpdateLeaseAuthority {
   fence.assertCurrent();
   const authority = admittedAuthorities.get(fence);
-  if (!authority) {
+  if (!authority || (expectedRunId !== undefined && admittedRunIds.get(fence) !== expectedRunId)) {
     throw new UpdateCommandRecoveryPendingError("Package recovery requires its admitted executor.");
   }
   return authority;
@@ -75,11 +73,6 @@ export function releaseUpdateCommandPreflightForHandoff(fence: UpdateRecoveryFen
   release();
 }
 
-type ChildPurpose = { auxiliaryPreflight?: true };
-type ChildOperation<T> = (
-  grant: UpdateCommandChildGrant,
-  bindChild: (pid: number) => void,
-) => Promise<T>;
 const childOwners = new WeakMap<
   UpdateRecoveryFence,
   <T>(root: string, operation: ChildOperation<T>, purpose?: ChildPurpose) => Promise<T>
@@ -388,6 +381,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
       try {
         fence.assertCurrent();
         if (databaseIdentity) {
+          admittedRunIds.set(fence, runId);
           admittedAuthorities.set(
             fence,
             Object.freeze({
@@ -426,6 +420,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
         active = false;
         childOwners.delete(fence);
         admittedAuthorities.delete(fence);
+        admittedRunIds.delete(fence);
         retainedOwners.delete(fence);
       }
       if ("error" in outcome) {
@@ -628,6 +623,7 @@ export async function withUpdateCommandExecutor<T>(
             });
             assertCurrent();
             admittedAuthorities.set(fence, authority);
+            admittedRunIds.set(fence, runId);
             if (serviceLease) {
               retainedOwners.set(fence, serviceLease.key);
             }
@@ -641,6 +637,7 @@ export async function withUpdateCommandExecutor<T>(
                 children.close();
                 childOwners.delete(fence);
                 admittedAuthorities.delete(fence);
+                admittedRunIds.delete(fence);
                 retainedOwners.delete(fence);
                 preflightReleases.delete(fence);
                 if (serviceLease) {
@@ -704,6 +701,7 @@ export async function withUpdateCommandExecutor<T>(
       preflightReleases.delete(fence);
       childOwners.delete(fence);
       admittedAuthorities.delete(fence);
+      admittedRunIds.delete(fence);
       retainedOwners.delete(fence);
       try {
         if (serviceLease && store && (serviceLease.version === 3 || !store.release(serviceLease))) {

@@ -9,9 +9,9 @@ import * as tempRoot from "../../infra/tmp-openclaw-dir.js";
 import * as processRunner from "../../process/exec.js";
 import { waitForPidToExit } from "../../test-utils/process-tree.js";
 import type { UpdateCommandOptions } from "./shared.js";
+import { createUpdateCommandExecutionGuards } from "./update-command-execution-guards.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import { runPackageUpdateDoctor } from "./update-command-package.js";
-import { createUpdateCommandExecutionGuards } from "./update-command-recovery.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 let root: string;
@@ -60,7 +60,7 @@ it("binds the real Doctor child while the parent remains suspended, then resumes
   await withUpdateCommandExecutor(runId, async (executor) => {
     const fence = await executor.enter(root, { serviceRoot });
     const opts: UpdateCommandOptions = { run: { runId, env, executorFence: fence } };
-    const guards = createUpdateCommandExecutionGuards(opts);
+    const guards = createUpdateCommandExecutionGuards(opts, root);
     vi.spyOn(processRunner, "runUtf8CommandWithTimeout").mockImplementation(
       async (_argv, options) => {
         assert(typeof options !== "number", "Doctor supplies input-admission options");
@@ -123,7 +123,7 @@ it.each([
       const fence = await executor.enter(root, { serviceRoot });
       const run = { runId, env, executorFence: fence, requesterAuthority };
       const opts: UpdateCommandOptions = { run };
-      const guards = createUpdateCommandExecutionGuards(opts);
+      const guards = createUpdateCommandExecutionGuards(opts, root);
       vi.spyOn(processRunner, "runUtf8CommandWithTimeout").mockImplementation(
         async (_argv, options) => {
           assert(typeof options !== "number", "Doctor supplies input-admission options");
@@ -203,7 +203,7 @@ it("returns a settled failing Doctor result without making the parent permanentl
   await withUpdateCommandExecutor(runId, async (executor) => {
     const fence = await executor.enter(root, { serviceRoot });
     const opts: UpdateCommandOptions = { run: { runId, env, executorFence: fence } };
-    const guards = createUpdateCommandExecutionGuards(opts);
+    const guards = createUpdateCommandExecutionGuards(opts, root);
     vi.spyOn(processRunner, "runUtf8CommandWithTimeout").mockImplementation(
       async (_argv, options) => {
         assert(typeof options !== "number", "Doctor supplies input-admission options");
@@ -253,7 +253,7 @@ it("preserves uncertain before-input failure while settling the child without in
   const work = withUpdateCommandExecutor(runId, async (executor) => {
     const fence = await executor.enter(root, { serviceRoot });
     const opts: UpdateCommandOptions = { run: { runId, env, executorFence: fence } };
-    const guards = createUpdateCommandExecutionGuards(opts);
+    const guards = createUpdateCommandExecutionGuards(opts, root);
     vi.spyOn(processRunner, "runUtf8CommandWithTimeout").mockImplementation(
       async (_argv, options) => {
         assert(typeof options !== "number", "Doctor supplies input-admission options");

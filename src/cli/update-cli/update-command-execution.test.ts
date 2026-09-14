@@ -209,8 +209,8 @@ describe("mutable update execution", () => {
           const runId = createUpdateRun({ trigger: "cli" }, { env: managedEnv }).runId;
           params.opts.run = { runId, env: managedEnv };
           const execution = await withUpdateCommandExecutor(runId, async (executor) => {
-            mocks.prepareMutableUpdate.mockImplementation(async () => {
-              params.opts.run!.executorFence = await executor.enter(root);
+            mocks.prepareMutableUpdate.mockImplementation(async (_env, _timeout, admitExecutor) => {
+              admitExecutor(await executor.enter(root));
             });
             return executeMutableUpdate(params);
           });
@@ -292,8 +292,8 @@ describe("mutable update execution", () => {
           },
         );
         const result = await withUpdateCommandExecutor(runId, async (executor) => {
-          mocks.prepareMutableUpdate.mockImplementation(async () => {
-            params.opts.run!.executorFence = await executor.enter(dir);
+          mocks.prepareMutableUpdate.mockImplementation(async (_env, _timeout, admitExecutor) => {
+            admitExecutor(await executor.enter(dir));
           });
           return executeMutableUpdate(params);
         });

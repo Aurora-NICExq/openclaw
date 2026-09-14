@@ -38,6 +38,7 @@ import {
   UpdatePreMutationError,
 } from "./shared.js";
 import { inspectUpdateDatabaseContexts } from "./update-command-database-context.js";
+import { createUpdateCommandExecutionGuards } from "./update-command-execution-guards.js";
 import type { MutableUpdateExecutionParams } from "./update-command-execution.types.js";
 import { createBeforeGitMutation, updateGitInstall } from "./update-command-git.js";
 import {
@@ -57,10 +58,7 @@ import {
   type PackageInstallUpdateParams,
 } from "./update-command-package.js";
 import { verifyPreviousGatewayForUpdate } from "./update-command-readiness.js";
-import {
-  assertUpdateCommandRecovery,
-  createUpdateCommandExecutionGuards,
-} from "./update-command-recovery.js";
+import { assertUpdateCommandRecovery } from "./update-command-recovery.js";
 import { runUpdateCommandRepair } from "./update-command-repair.js";
 import {
   createUpdateCommandFailureResult,
@@ -103,8 +101,16 @@ export async function executeMutableUpdate(
     });
   const originalRun = opts.run;
   const requesterAuthority = originalRun?.requesterAuthority;
-  const { assertCurrent: assertExecutionCurrent, assertBoundChildCurrent } =
-    createUpdateCommandExecutionGuards(opts);
+  const {
+    assertCurrent: assertExecutionCurrent,
+    assertBoundChildCurrent,
+    admitExecutor,
+  } = createUpdateCommandExecutionGuards(opts, params.root);
+  const prepareMutableUpdate = async (env?: NodeJS.ProcessEnv, activationTimeoutMs?: number) => {
+    assertExecutionCurrent();
+    await params.prepareMutableUpdate(env, activationTimeoutMs, admitExecutor);
+    assertExecutionCurrent();
+  };
   const mode: UpdateRunResult["mode"] =
     params.updateInstallKind === "git"
       ? "git"
@@ -370,9 +376,7 @@ export async function executeMutableUpdate(
           await preflightPlugins(await readPackageVersion(root));
           signal?.throwIfAborted();
           assertCurrent?.();
-          await params.prepareMutableUpdate(
-            ownedManagedUpdateContext?.env ?? admission?.managedEnv,
-          );
+          await prepareMutableUpdate(ownedManagedUpdateContext?.env ?? admission?.managedEnv);
           signal?.throwIfAborted();
           assertCurrent?.();
         }
@@ -551,7 +555,7 @@ export async function executeMutableUpdate(
       nodeRunner: params.packageUpdateNodeRunner,
     });
     assertExecutionCurrent();
-    await params.prepareMutableUpdate(env, activationTimeoutMs);
+    await prepareMutableUpdate(env, activationTimeoutMs);
     assertExecutionCurrent();
     if (opts.run) {
       recordUpdateRunPhase(opts.run.runId, "activating", undefined, { env: opts.run.env });
@@ -576,7 +580,7 @@ export async function executeMutableUpdate(
       }
       await stopManagedServiceBeforeMutableUpdate(undefined, "inspect");
       if (!stagedPluginAdmission) {
-        await params.prepareMutableUpdate(admission?.managedEnv);
+        await prepareMutableUpdate(admission?.managedEnv);
       }
       const packageUpdate: PackageInstallUpdateParams = {
         // A separate serving root still needs the preparation/activation hooks.
@@ -630,7 +634,7 @@ export async function executeMutableUpdate(
           await recheckSchemas(target.schemaVersions);
           if (!gitContextPrepared) {
             await stopManagedServiceBeforeMutableUpdate(gitMutationRoots ?? undefined, "inspect");
-            await params.prepareMutableUpdate(admission?.managedEnv);
+            await prepareMutableUpdate(admission?.managedEnv);
             // Revalidation retains activation's stop and recovery state.
             gitContextPrepared = true;
           }
@@ -663,9 +667,7 @@ export async function executeMutableUpdate(
                 getPreManagedServiceStop: () => preManagedServiceStop,
                 checkTargetSchemas: recheckSchemas,
                 prepareMutableUpdate: () =>
-                  params.prepareMutableUpdate(
-                    ownedManagedUpdateContext?.env ?? admission?.managedEnv,
-                  ),
+                  prepareMutableUpdate(ownedManagedUpdateContext?.env ?? admission?.managedEnv),
                 switchToGit: params.switchToGit,
               })
             : undefined,

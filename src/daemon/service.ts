@@ -58,6 +58,7 @@ import type {
   GatewayServiceStageArgs,
   GatewayServiceState,
 } from "./service-types.js";
+import { getGatewayServiceUpdateNativeCommand } from "./service-update-authority.js";
 import { readSystemdDefinitionMutationCapability } from "./systemd-definition-mutation.js";
 import { admitSystemdServiceReadBinding } from "./systemd-peer.js";
 import { isSystemdServiceAbsent } from "./systemd-scope.js";
@@ -323,11 +324,13 @@ async function readGatewayServiceStateWithBinding(
       runtime: { status: "stopped", missingUnit: true },
     };
   }
-  const [installed, loadState, runtime, definitionMutationCapability] = await Promise.all([
+  const readInstalled = async () =>
     command !== null
       ? true
-      : (service.hasInstalledDefinition?.({ env, timeoutMs }).catch(() => false) ?? false),
-    readGatewayServiceLoadState(service, { env: systemdReadBinding ? baseEnv : env, timeoutMs }),
+      : (service.hasInstalledDefinition?.({ env, timeoutMs }).catch(() => false) ?? false);
+  const readLoadState = () =>
+    readGatewayServiceLoadState(service, { env: systemdReadBinding ? baseEnv : env, timeoutMs });
+  const readRuntime = () =>
     service
       .readRuntime(env, {
         timeoutMs,
@@ -336,8 +339,9 @@ async function readGatewayServiceStateWithBinding(
         ...(args.requireEffective && args.requireLoadedCommand ? { requireLoaded: true } : {}),
         ...(args.loadForInspection ? { loadForInspection: args.loadForInspection } : {}),
       })
-      .catch((error: unknown) => createServiceRuntimeInspectionFailure(error)),
-    // Update policy needs definition authority; ordinary status/start reads do not.
+      .catch((error: unknown) => createServiceRuntimeInspectionFailure(error));
+  // Update policy needs definition authority; ordinary status/start reads do not.
+  const readDefinitionCapability = async () =>
     args.requireEffective
       ? service
           .readDefinitionMutationCapability?.({
@@ -348,8 +352,23 @@ async function readGatewayServiceStateWithBinding(
             ...(args.requireLoadedCommand ? { requireLoaded: true } : {}),
           })
           .catch(() => ({ kind: "unknown", reason: "inspection-failed" }) as const)
-      : undefined,
-  ]);
+      : undefined;
+  // A delegated native child suspends the parent fence. Join each read before
+  // another can use the parent's direct native peer; ordinary reads stay parallel.
+  const [installed, loadState, runtime, definitionMutationCapability] =
+    getGatewayServiceUpdateNativeCommand()
+      ? ([
+          await readInstalled(),
+          await readLoadState(),
+          await readRuntime(),
+          await readDefinitionCapability(),
+        ] as const)
+      : await Promise.all([
+          readInstalled(),
+          readLoadState(),
+          readRuntime(),
+          readDefinitionCapability(),
+        ]);
   systemdReadBinding?.verify();
   return {
     inspectionReason:
