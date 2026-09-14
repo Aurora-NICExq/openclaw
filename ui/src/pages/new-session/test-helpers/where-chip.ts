@@ -67,7 +67,6 @@ export function renderPicker(
       cloudProfileId: selection.cloudProfileId ?? "",
       deviceId: selection.deviceId ?? "",
       autoDevice: selection.autoDevice,
-      worktreeAvailable: true,
       submitting: false,
       pendingPlacement: false,
       popoverOpen: true,
