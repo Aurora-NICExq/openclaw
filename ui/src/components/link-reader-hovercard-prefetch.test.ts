@@ -2,32 +2,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
-import { GitHubLinkHovercardProvider } from "./github-link-hovercard.runtime.ts";
-import { parseGitHubLinkTarget } from "./github-link-target.ts";
+import { TEST_LINK_READER, testLinkPreview } from "../test-helpers/link-reader.ts";
+import { LinkReaderHovercardProvider } from "./link-reader-hovercard.ts";
+import { resolveLinkReaderTarget } from "./link-reader-target.ts";
 
 const TAG = `test-github-prefetch-${crypto.randomUUID()}`;
-customElements.define(TAG, class extends GitHubLinkHovercardProvider {});
+customElements.define(TAG, class extends LinkReaderHovercardProvider {});
 const ISSUE_HREF = "https://github.com/openclaw/openclaw/issues/99815";
 const GITHUB_HOVERCARD_CLOSE_DELAY_MS = 120;
 
 function issuePreviewResponse(overrides: Record<string, unknown> = {}) {
-  return {
-    comments: 2,
-    createdAt: "2026-07-05T08:00:00Z",
-    kind: "issue",
-    login: "octocat",
-    number: 99815,
-    owner: "openclaw",
-    repo: "openclaw",
-    state: "open",
-    title: "Keep hover previews reachable",
-    updatedAt: "2026-07-05T09:55:00Z",
-    ...overrides,
-  };
+  return { ...testLinkPreview(), ...overrides };
 }
 
 function createIssueLink() {
-  const provider = document.createElement(TAG) as GitHubLinkHovercardProvider;
+  const provider = document.createElement(TAG) as LinkReaderHovercardProvider;
+  provider.readers = [TEST_LINK_READER];
   const anchor = document.createElement("a");
   anchor.href = ISSUE_HREF;
   anchor.textContent = "#99815";
@@ -47,7 +37,7 @@ function leave(anchor: HTMLAnchorElement) {
   anchor.dispatchEvent(new MouseEvent("pointerout", { bubbles: true, composed: true }));
 }
 
-const hovercard = () => document.querySelector<HTMLElement>(".github-link-hovercard");
+const hovercard = () => document.querySelector<HTMLElement>(".link-reader-hovercard");
 
 describe("GitHub hovercard prefetch subscriptions", () => {
   beforeEach(() => vi.useFakeTimers());
@@ -61,7 +51,10 @@ describe("GitHub hovercard prefetch subscriptions", () => {
     const { anchor, provider, request } = createIssueLink();
     request.mockReturnValue(deferred.promise);
     const scope = new AbortController();
-    const pending = provider.prefetch(parseGitHubLinkTarget(ISSUE_HREF)!, scope.signal);
+    const pending = provider.prefetch(
+      resolveLinkReaderTarget(ISSUE_HREF, [TEST_LINK_READER])!,
+      scope.signal,
+    );
     expect(hovercard()).toBeNull();
     await hover(anchor);
     leave(anchor);
@@ -90,7 +83,7 @@ describe("GitHub hovercard prefetch subscriptions", () => {
       const { anchor, provider, request } = createIssueLink();
       request.mockReturnValue(deferred.promise);
       const firstScope = new AbortController();
-      const target = parseGitHubLinkTarget(ISSUE_HREF)!;
+      const target = resolveLinkReaderTarget(ISSUE_HREF, [TEST_LINK_READER])!;
       let first: Promise<unknown> | undefined;
       if (firstConsumer === "prefetch") {
         first = provider.prefetch(target, firstScope.signal).catch((error: unknown) => error);
@@ -119,7 +112,7 @@ describe("GitHub hovercard prefetch subscriptions", () => {
     const { anchor, provider, request } = createIssueLink();
     const client = { request, connected: false };
     provider.client = client as unknown as GatewayBrowserClient;
-    const target = parseGitHubLinkTarget(ISSUE_HREF)!;
+    const target = resolveLinkReaderTarget(ISSUE_HREF, [TEST_LINK_READER])!;
     await provider.prefetch(target, new AbortController().signal);
     expect(request).not.toHaveBeenCalled();
 
@@ -137,7 +130,7 @@ describe("GitHub hovercard prefetch subscriptions", () => {
       const { anchor, provider, request } = createIssueLink();
       request.mockReturnValueOnce(old.promise);
       const pending = provider.prefetch(
-        parseGitHubLinkTarget(ISSUE_HREF)!,
+        resolveLinkReaderTarget(ISSUE_HREF, [TEST_LINK_READER])!,
         new AbortController().signal,
       );
       const signal = request.mock.calls[0]![2].signal as AbortSignal;

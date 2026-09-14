@@ -63,6 +63,7 @@ import type { ApplicationNavigationOptions, ApplicationContext } from "./context
 import { createScopeUpgradeCapability } from "./device-scope-upgrade.ts";
 import { startGatewayPageActivation } from "./gateway-page-activation.ts";
 import { createApplicationGateway } from "./gateway-store.ts";
+import { startLinkReaderRouting } from "./link-reader-routing.ts";
 import { createNativeChatDrafts } from "./native-bridge.ts";
 import { startNativeLinkRouting } from "./native-link-routing.ts";
 import { createApplicationOverlays } from "./overlays.ts";
@@ -315,6 +316,7 @@ export function bootstrapApplication(): ApplicationRuntime {
       sessionRefFromPath(applicationLocation.pathname, basePath)?.namespace === "chat",
   );
   const nativeChatDrafts = createNativeChatDrafts();
+  const linkReaderRouting = startLinkReaderRouting(() => gateway.snapshot);
   const nativeLinkRouting = startNativeLinkRouting({
     signal: startupLifecycle.signal,
     canPresentBrowserPanel: () => {
@@ -680,6 +682,7 @@ export function bootstrapApplication(): ApplicationRuntime {
       overlays.dispose();
       theme.dispose();
       nativeChatDrafts.dispose();
+      linkReaderRouting.dispose();
       nativeLinkRouting.dispose();
       webPush.dispose();
       chatSubmissions.clear();

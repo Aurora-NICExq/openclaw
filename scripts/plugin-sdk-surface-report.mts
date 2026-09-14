@@ -204,7 +204,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +3: typed feature contracts, backend registration, and native Control UI hosting.
       // +1: public provider-owned asynchronous embedding batch contract.
       // +1: runtime-neutral WebSocket client/server adapter for bundled and external plugins.
-      154,
+      // +1: passive docked link-reader contracts.
+      155,
       env,
     ),
     publicExports: readPluginSdkSurfaceBudgetEnv(
@@ -374,7 +375,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: shared per-connection webhook request ordering for channel listeners.
       // +1: approved shared widget CDN policy for core and channel presenters.
       // +13: runtime-neutral WebSocket client/server, stream, data, and option contracts.
-      4479,
+      // +6: passive link-reader descriptor, metadata, document, preview, and request types.
+      // +2: typed unavailable-secret error and trusted-brand guard for plugin-owned transports.
+      4487,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -512,7 +515,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: shared stored-account key selection for channel readers and writers.
       // +1: shared per-connection webhook request ordering for channel listeners.
       // +4: runtime-neutral WebSocket client/server and stream constructors.
-      2643,
+      // +1: trusted unavailable-secret error classification without string-based fallbacks.
+      2644,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

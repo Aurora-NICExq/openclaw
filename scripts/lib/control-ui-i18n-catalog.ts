@@ -11,6 +11,8 @@ import { registerBrowserEnglish } from "../../ui/src/i18n/locales/en-browser.ts"
 import { registerDebugEnglish } from "../../ui/src/i18n/locales/en-debug.ts";
 import { registerDesktopEnglish } from "../../ui/src/i18n/locales/en-desktop.ts";
 import { registerDevicesEnglish } from "../../ui/src/i18n/locales/en-devices.ts";
+import { registerGitHubEnglish } from "../../ui/src/i18n/locales/en-github.ts";
+import { registerLinkReaderEnglish } from "../../ui/src/i18n/locales/en-link-reader.ts";
 import { registerLoginEnglish } from "../../ui/src/i18n/locales/en-login.ts";
 import { registerMeetingsEnglish } from "../../ui/src/i18n/locales/en-meetings.ts";
 import { registerMemoryImportEnglish } from "../../ui/src/i18n/locales/en-memory-import.ts";
@@ -49,6 +51,8 @@ const sourceFiles = [
   "en-desktop.ts",
   "en-devices.ts",
   "en-login.ts",
+  "en-link-reader.ts",
+  "en-github.ts",
   "en-meetings.ts",
   "en-memory-import.ts",
   "en-model-accounts.ts",
@@ -78,6 +82,7 @@ export function loadControlUiSourceCatalog(): TranslationMap {
     // Preserve partial-fragment key order while keeping shared labels eager.
     {
       ...en,
+      agentTools: { ...registerGitHubEnglish.catalog.agentTools, ...en.agentTools },
       board: { ...en.board, widget: boardWidget },
       debug: registerDebugEnglish.catalog.debug,
       desktop: registerDesktopEnglish.catalog.desktop,
@@ -88,6 +93,7 @@ export function loadControlUiSourceCatalog(): TranslationMap {
     registerBrowserEnglish.catalog,
     registerDevicesEnglish.catalog,
     registerLoginEnglish.catalog,
+    registerLinkReaderEnglish.catalog,
     registerMeetingsEnglish.catalog,
     registerMemoryImportEnglish.catalog,
     registerModelAccountsEnglish.catalog,

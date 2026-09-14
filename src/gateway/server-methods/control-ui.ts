@@ -1,5 +1,11 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import {
+  formatControlUiGitHubPreviewError,
+  loadControlUiGitHubPreview,
+  parseControlUiGitHubPreviewTarget,
+  type ControlUiGitHubPreviewIdentity,
+} from "../../../extensions/github/api.js";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import {
   GitHubIdentityError,
@@ -10,13 +16,6 @@ import { redactToolPayloadText } from "../../logging/redact.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../../secrets/runtime-state.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import type { ControlUiSessionPreview } from "../control-ui-contract.js";
-import { formatControlUiGitHubPreviewError } from "../control-ui-github-api.js";
-import {
-  loadControlUiGitHubPreview,
-  parseControlUiGitHubPreviewTarget,
-  type ControlUiGitHubPreviewIdentity,
-  type ControlUiGitHubPreviewTarget,
-} from "../control-ui-github-preview.js";
 import { parseControlUiSessionPullRequestsSubscribeParams } from "../control-ui-session-pr-subscriptions.js";
 import { requestCurrentGitHubOAuthRefresh } from "../github-oauth-lifecycle.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
@@ -31,10 +30,7 @@ import type {
   GatewayRequestHandlers,
 } from "./types.js";
 
-type LoadGitHubPreview = (
-  target: ControlUiGitHubPreviewTarget,
-  identity?: ControlUiGitHubPreviewIdentity,
-) => ReturnType<typeof loadControlUiGitHubPreview>;
+type LoadGitHubPreview = typeof loadControlUiGitHubPreview;
 
 async function prepareControlUiGitHubIdentity(
   { context, client, signal }: GatewayRequestHandlerOptions,
@@ -202,7 +198,7 @@ export function createControlUiHandlers(
     "controlUi.githubPreview": async (options) => {
       const { params, respond, context } = options;
       const target = parseControlUiGitHubPreviewTarget(params);
-      if (!target) {
+      if (!target || (params.refresh !== undefined && typeof params.refresh !== "boolean")) {
         respond(
           false,
           undefined,
@@ -224,7 +220,10 @@ export function createControlUiHandlers(
           options,
           resolved.agentId,
         );
-        const preview = await loadGitHubPreview(target, identity);
+        const preview =
+          params.refresh === true
+            ? await loadGitHubPreview(target, identity, undefined, true)
+            : await loadGitHubPreview(target, identity);
         assertSelected();
         respond(true, preview, undefined);
       } catch (error) {

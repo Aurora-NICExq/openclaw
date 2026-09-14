@@ -2,7 +2,8 @@ import { html, nothing } from "lit";
 import { property } from "lit/decorators.js";
 import type { ControlUiSessionPullRequest } from "../../../../src/gateway/control-ui-contract.js";
 import type { ApplicationContext } from "../../app/context.ts";
-import "../../components/github-link-hovercard-registration.ts";
+import "../../components/link-reader-hovercard-registration.ts";
+import { availableLinkPreviewReaders } from "../../app/link-reader-routing.ts";
 import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
 import { registerActivityEnglish } from "../../i18n/locales/en-activity.ts";
@@ -96,8 +97,9 @@ class ActivitySessionGit extends OpenClawLightDomElement {
       return nothing;
     }
     const stale = snapshot.status !== "ready" || gateway.snapshot.phase !== "connected";
-    return html`<openclaw-github-link-hovercard-provider
-      .client=${gateway.snapshot.client}
+    return html`<openclaw-link-reader-hovercard-provider
+      .client=${gateway.snapshot.phase === "connected" ? gateway.snapshot.client : null}
+      .readers=${availableLinkPreviewReaders(gateway.snapshot)}
       .agentId=${this.agentId}
     >
       <div class="activity-feed__git">
@@ -126,7 +128,7 @@ class ActivitySessionGit extends OpenClawLightDomElement {
             : nothing
         }
       </div>
-    </openclaw-github-link-hovercard-provider>`;
+    </openclaw-link-reader-hovercard-provider>`;
   }
 }
 
