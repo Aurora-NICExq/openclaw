@@ -10,6 +10,7 @@ import type { PreparedSqliteAuditRecord } from "../infra/sqlite-audit-record.ker
 import type { SqliteFileGeneration } from "../infra/sqlite-file-generation.js";
 import type { PluginMetadataStateSelector } from "../plugins/installed-plugin-index-row.js";
 import type { TaskFlowView } from "../plugins/runtime/task-domain-types.js";
+import type { ProjectRegistryIdentity } from "../projects/project-registry.kernel.js";
 import type { ManagedTaskInFlowInput } from "../tasks/task-flow-managed-run-task.kernel.js";
 import type { RunTaskInFlowResult } from "../tasks/task-flow-managed-run-task.types.js";
 import type {
@@ -23,6 +24,7 @@ import type {
   TaskRegistryStoreSnapshot,
 } from "../tasks/task-registry.store.types.js";
 import type { TaskRecord, TaskRegistrySummary } from "../tasks/task-registry.types.js";
+import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease-store.js";
 import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js";
 
 type TaskLookupRecords = {
@@ -47,6 +49,10 @@ export type OpenClawStateWorkerOperations = UserPreferenceWorkerOperations &
   CronStoreWorkerOperations &
   SessionDeliveryWorkerOperations & {
     "projects.findRoot": { input: { repoRoot: string }; output: string | undefined };
+    "projects.remove": {
+      input: { project: ProjectRegistryIdentity; lease: OpenClawStateLeaseIdentity };
+      output: boolean;
+    };
     "plugins.metadata.read": {
       input: { selector: PluginMetadataStateSelector; artifactPreservingReadOnly?: boolean };
       output: { value_json: string } | undefined;
