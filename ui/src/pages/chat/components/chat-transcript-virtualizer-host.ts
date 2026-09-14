@@ -17,6 +17,7 @@ import {
   type ChatScrollToEndOptions,
 } from "../scroll.ts";
 import { SIDEBAR_GEOMETRY_COMMIT_EVENT } from "../sidebar-layout.ts";
+import { ChatMessageEntryAnimations } from "./chat-message-entry.ts";
 import { ChatMessageReveal } from "./chat-message-reveal.ts";
 import {
   TranscriptAnnouncementState,
@@ -64,6 +65,7 @@ import {
 
 export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatTranscriptSession {
   private readonly offsetState = createTranscriptOffsetState();
+  readonly entryAnimations = new ChatMessageEntryAnimations();
   expandedAssistantMessages = new Map<string, AssistantMessageExpansionState>();
   private readonly controllers = new Set<ReactiveController>();
   private readonly positionRail: PositionRailGutterController;
@@ -353,6 +355,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
   }
 
   update(): void {
+    this.entryAnimations.didCommit();
     for (const controller of this.controllers) {
       controller.hostUpdated?.();
     }
@@ -397,6 +400,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
   }
 
   disconnect(): void {
+    this.entryAnimations.disconnect();
     // Clear retires bodies and pending loads; replacement invalidates guarded
     // rows when this presentation reconnects with the same source messages.
     this.expandedAssistantMessages.clear();
@@ -474,6 +478,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
         header,
         messageRows: this.candidateMessageRowKeysById,
         renderKeyRows: this.candidateMessageRowsByKey,
+        entryKeys: this.entryAnimations.projectedKeys,
       },
       true,
     );
@@ -499,6 +504,10 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
       () => {
         // Rows, lookup maps, and the retained renderer commit together. A
         // teardown-pending candidate must never replace the displayed model.
+        this.entryAnimations.sync(
+          snapshot.entryKeys,
+          announce && !this.offsetState.pendingScrollOffset,
+        );
         this.messageRowKeysById = messageRows;
         this.committedMessageRowsByKey = renderKeyRows;
         this.renderPreviousRows = () => this.renderCommittedRows(snapshot, false);
@@ -575,7 +584,11 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     if (source === "auto" && (this.offsetState.pendingScrollOffset || !this.canAutoFollow())) {
       return false;
     }
-    this.cancelScroll();
+    // Automatic follow retargets the same native end command. Cancelling first
+    // inserts an instant scroll and restarts easing on every streamed update.
+    if (source !== "auto" || this.offsetState.scrollCommand?.target !== "end") {
+      this.cancelScroll();
+    }
     this.offsetState.scrollCommand = {
       behavior,
       target: "end",
