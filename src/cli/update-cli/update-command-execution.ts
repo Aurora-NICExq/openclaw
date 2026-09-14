@@ -593,7 +593,6 @@ export async function executeMutableUpdate(
         timeoutMs: updateStepTimeoutMs,
         startedAt: params.startedAt,
         progress: params.progress,
-        jsonMode: Boolean(opts.json),
         invocationCwd: params.invocationCwd,
         honorPackageRoot:
           params.managedServiceRootRedirect !== null ||
