@@ -145,8 +145,9 @@ describe("projects vitest config", () => {
         "gateway",
         "gateway-database-workers",
       ]);
-      expect(projects.map((project) => project.pool)).toEqual(["threads", "forks"]);
+      expect(projects.map((project) => project.pool)).toEqual(["forks", "forks"]);
       const original = requireTestConfig(createGatewayVitestConfig(env));
+      expect(original.pool).toBe("threads");
       for (const project of projects) {
         expect(project.runner).toBe(original.runner);
         expect(project.setupFiles).toEqual(original.setupFiles);

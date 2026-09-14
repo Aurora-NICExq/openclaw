@@ -42,12 +42,18 @@ export function createGatewayProjectShardVitestConfig(
   if (env.OPENCLAW_GATEWAY_PROJECT_SHARDS !== "0") {
     return aggregate;
   }
+  const ordinary = createGatewayVitestConfig(env);
   return defineConfig({
     ...aggregate,
     test: {
       ...aggregate.test,
       projects: [
-        { ...createGatewayVitestConfig(env), extends: false },
+        {
+          ...ordinary,
+          extends: false,
+          // Unsharded Gateway tests still need the process-main-thread SQLite broker.
+          test: { ...ordinary.test, pool: "forks" },
+        },
         { ...createGatewayDatabaseWorkersVitestConfig(env), extends: false },
       ],
     },
