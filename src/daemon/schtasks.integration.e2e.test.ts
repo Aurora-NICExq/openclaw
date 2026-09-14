@@ -633,6 +633,7 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
             OPENCLAW_STATE_DIR: stateDir,
             OPENCLAW_CONFIG_PATH: env.OPENCLAW_CONFIG_PATH,
             OPENCLAW_GATEWAY_PORT: String(gatewayPort),
+            OPENCLAW_WINDOWS_TASK_NAME: taskName,
             OPENCLAW_SERVICE_KIND: "gateway",
             OPENCLAW_SERVICE_MARKER: "openclaw",
           },
@@ -667,6 +668,7 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
         expect(command?.programArguments).toEqual(programArguments);
         expect(command?.environment?.OPENCLAW_GATEWAY_PORT).toBe(String(gatewayPort));
         expect(command?.environment?.OPENCLAW_SERVICE_KIND).toBe("gateway");
+        expect(command?.environment?.OPENCLAW_WINDOWS_TASK_NAME).toBe(taskName);
         // An executed exit 23 need not trigger Scheduler retry. Request recovery only
         // after failure cleanup; IgnoreNew prevents overlap if Scheduler also retries.
         const recoveryMutations: string[] = [];
@@ -883,6 +885,7 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
           (candidate) => candidate.phase === "bounded-environment",
         )) {
           expect(event.keys?.length).toBeGreaterThan(0);
+          expect(event.keys).toContain("OPENCLAW_WINDOWS_TASK_NAME");
           expect(
             event.keys?.some((key) =>
               /TOKEN|SECRET|PASSWORD|CREDENTIAL|(^|_)(KEY|KEYS)$|ACTIONS_|GITHUB_|AZURE_|AWS_/u.test(
@@ -990,8 +993,6 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
       testError = error;
     }
 
-    let cleanupFailed = false;
-    let cleanupError: unknown;
     try {
       await lifetime.verifyCleanup(() =>
         cleanupNativeTask({
@@ -1006,14 +1007,11 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
           taskName,
         }),
       );
-    } catch (error) {
-      cleanupFailed = true;
-      cleanupError = error;
-    }
-    if (cleanupFailed) {
+    } catch (cleanupError) {
       throw new AggregateError(
         testFailed ? [testError, cleanupError] : [cleanupError],
         "Native Scheduled Task cleanup failed",
+        { cause: cleanupError },
       );
     }
     if (testFailed) {
