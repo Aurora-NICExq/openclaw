@@ -4,7 +4,7 @@ import * as gatewayWorkAdmission from "../../process/gateway-work-admission.js";
 
 /** Join the real A2A continuations before their test-owned stores and mocks are released. */
 export function observeSessionSendContinuations() {
-  const spy = vi.spyOn(gatewayWorkAdmission, "runWithGatewayIndependentRootWorkContinuation");
+  const spy = vi.spyOn(gatewayWorkAdmission, "runWithGatewayDetachedWorkContinuation");
   const failures = new Map<Promise<unknown>, { reason: unknown; reported: boolean }>();
 
   function reportFailures(previous?: ReadonlySet<Promise<unknown>>): void {
