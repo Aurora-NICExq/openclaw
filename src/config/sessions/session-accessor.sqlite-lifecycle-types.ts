@@ -14,6 +14,7 @@ import type {
   SessionEntryLifecycleRemoval,
 } from "./session-accessor.sqlite-contract.js";
 import type { SqliteLifecycleTargetSnapshot } from "./session-accessor.sqlite-entry-equality.js";
+import type { SessionEntryMaintenanceInput } from "./session-accessor.sqlite-maintenance-store.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 // Shared plan shapes only. Runtime ownership stays in maintenance and lifecycle-state.
@@ -31,6 +32,16 @@ type SessionReclamationPlanBase = {
 };
 
 export type SqliteSessionReclamationPlan =
+  | (SessionReclamationPlanBase & { kind: "maintenance-statistics" })
+  | (SessionReclamationPlanBase & {
+      kind: "maintenance-plan";
+      input: SessionEntryMaintenanceInput;
+    })
+  | (SessionReclamationPlanBase & {
+      agentId: string;
+      entries: SessionEntryRemovalPlan[];
+      kind: "maintenance-finalize";
+    })
   | (SessionReclamationPlanBase & {
       deleteParams: ReclamationDeleteParams;
       kind: "entry";
@@ -56,6 +67,16 @@ export type SqliteSessionReclamationPlan =
     });
 
 export type SqliteSessionReclamationResult =
+  | { kind: "maintenance-statistics"; value: true }
+  | { kind: "maintenance-plan"; value: SessionEntryMaintenancePlan }
+  | {
+      kind: "maintenance-finalize";
+      value: {
+        archivedTranscripts: SessionLifecycleArchivedTranscript[];
+        changedEntries: SessionEntryRemovalPlan[];
+        committedEntries: SessionEntryRemovalPlan[];
+      };
+    }
   | { kind: "entry"; value: DeleteSessionEntryLifecycleResult }
   | {
       kind: "lifecycle-artifacts";
