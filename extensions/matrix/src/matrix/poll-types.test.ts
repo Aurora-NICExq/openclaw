@@ -213,11 +213,11 @@ describe("buildPollResultsSummary", () => {
   });
 
   it.each([
-    { name: "nonfinite closing times", endTimes: [undefined, NaN, Infinity], closed: false },
+    { name: "nonfinite closing times", endTimes: [undefined, Number.NaN, Infinity], closed: false },
     { name: "the earliest finite closing time", endTimes: [1, -0], closed: true },
   ])("preserves vote ordering with $name", ({ endTimes, closed }) => {
     const votes: Array<[string, number | undefined, string]> = [
-      ["$z", NaN, "answer2"],
+      ["$z", Number.NaN, "answer2"],
       ["$a", undefined, "answer1"],
       ["$after", 0.5, "answer1"],
       ["$equal", 0, "answer2"],
