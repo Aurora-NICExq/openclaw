@@ -61,6 +61,7 @@ export const uiE2eRealGatewayTestFiles = [
 export const uiE2ePrivateServerTestFiles = [
   "ui/src/e2e/agent-file-lifecycle.real-gateway.e2e.test.ts",
   "ui/src/e2e/approval-bootstrap.e2e.test.ts",
+  "ui/src/e2e/browser-auth-recovery.e2e.test.ts",
   "ui/src/e2e/build-info-unicode.e2e.test.ts",
   "ui/src/e2e/chat-agent-avatar.real-gateway.e2e.test.ts",
   "ui/src/e2e/chat-code-block-fences.e2e.test.ts",
@@ -82,6 +83,7 @@ export const uiE2ePrivateServerTestFiles = [
   "ui/src/e2e/cron-loading.e2e.test.ts",
   "ui/src/e2e/desktop-resize.real-gateway.e2e.test.ts",
   "ui/src/e2e/device-platform-family.real-gateway.e2e.test.ts",
+  "ui/src/e2e/favicon-status.e2e.test.ts",
   "ui/src/e2e/gateway-foreground-recovery.e2e.test.ts",
   "ui/src/e2e/initial-connect-splash.e2e.test.ts",
   "ui/src/e2e/locale-offline-retry.e2e.test.ts",

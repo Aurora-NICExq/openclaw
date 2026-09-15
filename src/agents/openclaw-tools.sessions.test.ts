@@ -1594,6 +1594,11 @@ describe("sessions tools", () => {
 
   it("sessions_send returns pending agent error diagnostics on timeout", async () => {
     const calls: Array<{ method?: string; params?: unknown }> = [];
+    let waitCount = 0;
+    let completePendingRun = () => {};
+    const pendingRunCompleted = new Promise<void>((resolve) => {
+      completePendingRun = resolve;
+    });
     callGatewayMock.mockImplementation(async (opts: unknown) => {
       const request = opts as { method?: string; params?: unknown };
       calls.push(request);
@@ -1605,6 +1610,16 @@ describe("sessions tools", () => {
         };
       }
       if (request.method === "agent.wait") {
+        waitCount += 1;
+        if (waitCount > 1) {
+          // Cleanup completes the fake run without making its initial pending error terminal.
+          await pendingRunCompleted;
+          return {
+            runId: "run-pending-model-error",
+            status: "ok",
+            terminalReply: { disposition: "silent" },
+          };
+        }
         return {
           runId: "run-pending-model-error",
           status: "timeout",
@@ -1620,21 +1635,29 @@ describe("sessions tools", () => {
       agentChannel: "discord",
     });
 
-    const result = await tool.execute("call-pending-error", {
-      sessionKey: "main",
-      message: "check status",
-      timeoutSeconds: 1,
-    });
+    await runQaGatewayFixture(
+      async () => {
+        const result = await tool.execute("call-pending-error", {
+          sessionKey: "main",
+          message: "check status",
+          timeoutSeconds: 1,
+        });
 
-    const details = sessionsSendDetails(result.details);
-    expect(details.status).toBe("timeout");
-    expect(details.error).toBe("429 RESOURCE_EXHAUSTED");
-    expect(details.runId).toBe("run-pending-model-error");
-    expect(details.sentBeforeError).toBe(true);
-    expect(details.delivery?.status).toBe("pending");
-    expect(calls.filter((call) => call.method === "agent")).toHaveLength(1);
-    await vi.waitFor(() =>
-      expect(calls.filter((call) => call.method === "agent.wait").length).toBeGreaterThanOrEqual(2),
+        const details = sessionsSendDetails(result.details);
+        expect(details.status).toBe("timeout");
+        expect(details.error).toBe("429 RESOURCE_EXHAUSTED");
+        expect(details.runId).toBe("run-pending-model-error");
+        expect(details.sentBeforeError).toBe(true);
+        expect(details.delivery?.status).toBe("pending");
+        expect(calls.filter((call) => call.method === "agent")).toHaveLength(1);
+        await vi.waitFor(() =>
+          expect(
+            calls.filter((call) => call.method === "agent.wait").length,
+          ).toBeGreaterThanOrEqual(2),
+        );
+      },
+      completePendingRun,
+      () => continuations.settle(),
     );
   });
 

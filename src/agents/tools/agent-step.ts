@@ -121,6 +121,7 @@ export async function runAgentStep(params: {
     runId: resolvedRunId,
     timeoutMs: Math.min(params.timeoutMs, 60_000),
     callGateway: gatewayCall,
+    untilTerminal: true,
   });
   if (result.status !== "ok") {
     return undefined;

@@ -1132,6 +1132,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/changed-path-facts.test.ts",
         "test/scripts/ci-changed-node-test-plan.test.ts",
         "test/scripts/ci-chrome-mcp-prewarm.test.ts",
+        "test/scripts/ci-docker-seed-plan.test.ts",
         "test/scripts/ci-security-fast-workflow.test.ts",
         "test/scripts/docker-release-artifacts.test.ts",
         "test/scripts/full-release-artifacts.test.ts",
@@ -1361,6 +1362,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/clawhub-postpublish.test.ts",
         "test/scripts/frv.test.ts",
         "test/scripts/full-release-publication-admission.test.ts",
+        "test/scripts/linux-app-channel.test.ts",
         "test/scripts/linux-updater-manifest.test.ts",
         "test/scripts/openclaw-release-ready.test.ts",
         "test/scripts/plugin-npm-extended-stable-workflow.test.ts",
@@ -1499,6 +1501,7 @@ describe("scripts/test-projects changed-target routing", () => {
         [
           "test/scripts/ci-workflow-guards.test.ts",
           "test/scripts/package-acceptance-workflow.test.ts",
+          "test/scripts/crabbox-hydrate-dependencies.test.ts",
           "test/scripts/setup-pnpm-store-cache-image.test.ts",
         ],
       ],
@@ -2212,9 +2215,10 @@ describe("scripts/test-projects changed-target routing", () => {
   );
 
   it.each(
-    ["test/vitest/vitest.gateway.config.ts", "src/gateway/config-reload.test.ts"].flatMap(
-      (target) => [true, false].map((workerFirst) => ({ target, workerFirst })),
-    ),
+    [
+      "test/vitest/vitest.gateway.config.ts",
+      "src/gateway/config-reload.telegram-policy.test.ts",
+    ].flatMap((target) => [true, false].map((workerFirst) => ({ target, workerFirst }))),
   )(
     "coalesces Gateway worker config with $target (worker first: $workerFirst)",
     ({ target, workerFirst }) => {
@@ -2433,12 +2437,28 @@ describe("scripts/test-projects changed-target routing", () => {
       "test/vitest/vitest.agents-embedded-agent-run.config.ts",
     ],
     ["src/agents/runtime-plan", "test/vitest/vitest.agents-support.config.ts"],
-    ["src/agents/tools", "test/vitest/vitest.agents-tools.config.ts"],
   ])("routes focused agent directory %s to its owning shard", (directory, config) => {
     expect(buildVitestRunPlans([directory])).toEqual([
       {
         config,
         forwardedArgs: [directory],
+        includePatterns: null,
+        watchMode: false,
+      },
+    ]);
+  });
+
+  it("splits the focused agent tools directory across its worker and tools owners", () => {
+    expect(buildVitestRunPlans(["src/agents/tools"])).toEqual([
+      {
+        config: "test/vitest/vitest.infra.config.ts",
+        forwardedArgs: [],
+        includePatterns: ["src/agents/tools/cron-tool.output-contract.test.ts"],
+        watchMode: false,
+      },
+      {
+        config: "test/vitest/vitest.agents-tools.config.ts",
+        forwardedArgs: ["src/agents/tools"],
         includePatterns: null,
         watchMode: false,
       },
@@ -4058,6 +4078,7 @@ describe("scripts/test-projects changed-target routing", () => {
       "test/vitest/vitest.ui.config.ts",
       "test/vitest/vitest.ui-isolated.config.ts",
       "test/vitest/vitest.ui-browser.config.ts",
+      "test/vitest/vitest.ui-timing.config.ts",
     ]);
   });
 
@@ -4086,18 +4107,20 @@ describe("scripts/test-projects changed-target routing", () => {
     });
   });
 
-  it("adds the isolated and Chromium projects for broad ui targets", () => {
+  it("adds isolated and Chromium projects before timing budgets for broad ui targets", () => {
     const plans = buildVitestRunPlans(["ui/src"]);
 
     expect(plans.map((plan) => plan.config)).toEqual([
       "test/vitest/vitest.ui.config.ts",
       "test/vitest/vitest.ui-isolated.config.ts",
       "test/vitest/vitest.ui-browser.config.ts",
+      "test/vitest/vitest.ui-timing.config.ts",
     ]);
     expect(plans[1]?.includePatterns).toContain("ui/src/pages/chat/chat-pane.test.ts");
     expect(plans[2]?.includePatterns).toContain(
       "ui/src/components/markdown-mermaid.runtime.browser.test.ts",
     );
+    expect(plans[3]?.includePatterns).toEqual(["ui/src/components/markdown.progress.node.test.ts"]);
   });
 
   it.each([
@@ -5098,6 +5121,9 @@ describe("scripts/test-projects full-suite sharding", () => {
         const unitFastPlans = targetedPlans("test/vitest/vitest.unit-fast.config.ts");
         expect(unitFastPlans.length).toBeGreaterThan(1);
         expect(unitFastPlans.every((plan) => plan.forwardedArgs.length <= 70)).toBe(true);
+        const unitSrcPlans = targetedPlans("test/vitest/vitest.unit-src.config.ts");
+        expect(unitSrcPlans.length).toBeGreaterThan(1);
+        expect(unitSrcPlans.every((plan) => plan.forwardedArgs.length <= 150)).toBe(true);
         const toolingPlans = targetedPlans("test/vitest/vitest.tooling.config.ts");
         expect(toolingPlans.length).toBeGreaterThan(1);
         expect(toolingPlans.every((plan) => plan.forwardedArgs.length <= 2)).toBe(true);
