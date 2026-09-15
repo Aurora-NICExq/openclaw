@@ -152,6 +152,9 @@ describe("registered Codex harness model attribution", () => {
             result = turnStartResult();
             turnStarted.resolve();
             break;
+          case "thread/backgroundTerminals/list":
+            result = { data: [], nextCursor: null };
+            break;
           case "thread/unsubscribe":
             result = { status: "unsubscribed" };
             break;
