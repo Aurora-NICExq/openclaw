@@ -72,7 +72,7 @@ function fixture() {
   const repo = { id: 123, nameWithOwner: "fixture/repo", url: "https://github.com/fixture/repo" };
   const repoAuthority = {
     id: repo.id,
-    node_id: "fixture-repository-node",
+    node_id: "fixture-repo",
     full_name: repo.nameWithOwner,
     html_url: repo.url,
   };
@@ -126,12 +126,13 @@ function fixture() {
     gh,
     `#!/bin/sh
 printf '%s\\t%s\\n' "$(git rev-parse --show-toplevel)" "$*" >> '${calls}'
-if [ "$*" = "api --hostname github.com repos/fixture/repo -H Cache-Control: max-age=0" ]; then
-  printf '%s' '${JSON.stringify(repoAuthority)}'
-  exit 0
-fi
 case "$1 $2" in
   "repo view") printf '%s\\n' '${JSON.stringify(repo)}' ;;
+  "api --hostname")
+    [ "$*" = 'api --hostname github.com repos/fixture/repo -H Cache-Control: max-age=0' ] || {
+      echo "Unexpected GitHub operation: $*" >&2; exit 99;
+    }
+    printf '%s\\n' '${JSON.stringify(repoAuthority)}' ;;
   "api graphql") printf '%s\\n' '${JSON.stringify(response)}' ;;
   "pr view")
     if [ "$(git rev-parse --show-toplevel)" = '${owner}' ]; then
