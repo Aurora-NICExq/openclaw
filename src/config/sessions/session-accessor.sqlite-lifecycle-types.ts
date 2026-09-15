@@ -33,7 +33,7 @@ export type SessionEntryMaintenanceInput = {
   archiveDirectory: string;
   forceMaintenance?: boolean;
   maintenance: ResolvedSessionMaintenanceConfig;
-  preservation: SessionMaintenancePreservationSnapshot;
+  preservation: SessionMaintenancePreservationSnapshot | null;
   storePath: string;
 };
 
@@ -79,6 +79,7 @@ export type SqliteSessionReclamationPlan =
 
 export type SqliteSessionReclamationResult =
   | { kind: "maintenance-statistics"; value: true }
+  | { kind: "maintenance-preservation-required" }
   | { kind: "maintenance-plan"; value: SessionEntryMaintenancePlan }
   | {
       kind: "maintenance-finalize";

@@ -67,7 +67,9 @@ it.each([false, true])(
       const statements = (["get", "all", "run", "iterate"] as const).map((method) =>
         vi.spyOn(StatementSync.prototype, method),
       );
-      const result = await completed;
+      const preservation = vi.fn(() => []);
+      const unregister = registerSessionMaintenancePreserveKeysProvider(preservation);
+      const result = await completed.finally(unregister);
       const sql = prepare.mock.calls.map(([query]) => query);
       const counts = {
         prepare: prepare.mock.calls.length,
@@ -88,6 +90,7 @@ it.each([false, true])(
       );
       if (!remove) {
         expect(Object.values(counts).every((count) => count === 0)).toBe(true);
+        expect(preservation).not.toHaveBeenCalled();
       }
       expect(loadSessionEntry(active)?.label).toBe("updated");
       if (remove) {

@@ -107,9 +107,10 @@ export function applySessionEntryMaintenanceInDatabase(
       initialUnarchivedCount: entryCount,
       forceMaintenance: params.forceMaintenance,
       readPreserveKeys: () => {
+        const snapshot = readPreservation();
         const keyProjection = readSessionMaintenanceKeyProjection(database);
         return resolveSessionMaintenancePreserveKeys({
-          snapshot: readPreservation(),
+          snapshot,
           store: keyProjection,
           baseKeys: collectSqliteSessionMaintenanceBaseKeys(keyProjection, activeSessionKeys),
         });

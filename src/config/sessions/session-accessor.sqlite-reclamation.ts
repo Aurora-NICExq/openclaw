@@ -195,19 +195,30 @@ export function reclaimSqliteSessionInTransaction(
     return { kind: plan.kind, value: true };
   }
   if (plan.kind === "maintenance-plan") {
-    const value = runOpenClawAgentWriteTransaction((database) => {
-      callbacks.beforeMutation?.();
-      const maintenance = applySessionEntryMaintenanceInDatabase(
-        database,
-        plan.input,
-        () => plan.input.preservation,
-      );
-      if (maintenance.archived > 0 || maintenance.entryRemovals.length > 0) {
-        callbacks.onCommit?.(database);
+    let preservationRequired: Error | undefined;
+    try {
+      const value = runOpenClawAgentWriteTransaction((database) => {
+        callbacks.beforeMutation?.();
+        const maintenance = applySessionEntryMaintenanceInDatabase(database, plan.input, () => {
+          if (plan.input.preservation === null) {
+            preservationRequired = new Error("SQLite maintenance requires session preservation");
+            throw preservationRequired;
+          }
+          return plan.input.preservation;
+        });
+        if (maintenance.archived > 0 || maintenance.entryRemovals.length > 0) {
+          callbacks.onCommit?.(database);
+        }
+        return maintenance;
+      }, plan.databaseOptions);
+      return { kind: plan.kind, value };
+    } catch (error) {
+      if (preservationRequired && error === preservationRequired) {
+        // Candidate discovery requested protection before writes; the transaction has rolled back.
+        return { kind: "maintenance-preservation-required" };
       }
-      return maintenance;
-    }, plan.databaseOptions);
-    return { kind: plan.kind, value };
+      throw error;
+    }
   }
 
   if (plan.kind === "maintenance-finalize") {

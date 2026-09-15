@@ -96,10 +96,7 @@ async function runPendingMaintenance(
               activeSessionKeys,
               archiveDirectory: owner.archiveDirectory,
               maintenance,
-              preservation:
-                maintenance.mode === "warn"
-                  ? { providerKeys: [], workIdentities: [], lifecycleIdentities: [] }
-                  : captureSessionMaintenancePreservation(owner.storePath),
+              preservation: null,
               storePath: owner.storePath,
             },
           });
@@ -118,24 +115,40 @@ async function runPendingMaintenance(
         }
         if (
           owner.generation !== generation ||
-          !isDeepStrictEqual(
-            operation.input.preservation,
-            captureSessionMaintenancePreservation(operation.input.storePath),
-          )
+          (operation.input.preservation !== null &&
+            !isDeepStrictEqual(
+              operation.input.preservation,
+              captureSessionMaintenancePreservation(operation.input.storePath),
+            ))
         ) {
           planningChanged = true;
           throw new Error("SQLite automatic maintenance inputs changed before commit");
         }
       };
-      const result =
+      const runPlanning = () =>
+        runSqliteSessionReclamation({
+          diagnostics: { kind: "maintenance-plan" },
+          assertCommitAllowed: assertCurrent,
+          forceInProcess: false,
+          plan: operation,
+        });
+      let result =
         operation.input.maintenance.mode === "warn"
           ? { kind: "maintenance-plan" as const, value: emptySessionEntryMaintenancePlan() }
-          : await runSqliteSessionReclamation({
-              diagnostics: { kind: "maintenance-plan" },
-              assertCommitAllowed: assertCurrent,
-              forceInProcess: false,
-              plan: operation,
-            });
+          : await runPlanning();
+      if (result.kind === "maintenance-preservation-required") {
+        await runExclusiveSqliteSessionWrite(
+          owner.scope,
+          async () => {
+            assertCurrent();
+            operation.input.preservation = captureSessionMaintenancePreservation(
+              operation.input.storePath,
+            );
+          },
+          "session.maintenance.plan",
+        );
+        result = await runPlanning();
+      }
       if (result.kind !== "maintenance-plan") {
         throw new Error("SQLite automatic maintenance returned another operation's result");
       }

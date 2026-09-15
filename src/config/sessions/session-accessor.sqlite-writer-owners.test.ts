@@ -385,11 +385,18 @@ it("coalesces automatic maintenance through the shared reclamation writer", asyn
         "session.maintenance.plan",
         "session.reclamation.retain",
         "session.reclamation.worker-commit",
+        "session.maintenance.plan",
+        "session.reclamation.retain",
+        "session.reclamation.worker-commit",
         "session.reclamation.retain",
         "session.reclamation.worker-commit",
         "session.archive.publish-prepare",
       ]);
-      expect(reclamationKinds).toEqual(["maintenance-plan", "maintenance-finalize"]);
+      expect(reclamationKinds).toEqual([
+        "maintenance-plan",
+        "maintenance-plan",
+        "maintenance-finalize",
+      ]);
       expect(loadSessionEntry({ sessionKey: staleKey, storePath })).toBeUndefined();
       expect(loadSessionEntry({ sessionKey: activeKey, storePath })?.sessionId).toBe("active");
     } finally {
