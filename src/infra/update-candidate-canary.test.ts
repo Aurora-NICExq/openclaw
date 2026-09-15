@@ -33,14 +33,19 @@ import { updateRunStepsFromResultStep, updateRunWarningMessages } from "./update
 import type { UpdateStepResult } from "./update-runner-types.js";
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), snapshot: vi.fn(), signal: vi.fn() }));
-vi.mock("node:child_process", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("node:child_process")>()),
-  spawn: mocks.spawn,
-}));
-vi.mock("../process/exec.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../process/exec.js")>()),
-  runCommandBuffered: mocks.snapshot,
-}));
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("./update-candidate-canary.test-support.js")).mockCanaryChildProcesses(
+    await importOriginal<typeof import("node:child_process")>(),
+    mocks.spawn,
+  ),
+);
+vi.mock("../process/exec.js", async (importOriginal) => {
+  const { mockCanarySnapshotCommands } = await import("./update-candidate-canary.test-support.js");
+  return mockCanarySnapshotCommands(
+    await importOriginal<typeof import("../process/exec.js")>(),
+    mocks.snapshot,
+  );
+});
 vi.mock("../process/kill-tree.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../process/kill-tree.js")>()),
   signalProcessTree: mocks.signal,
@@ -850,12 +855,8 @@ describe("update candidate canary", () => {
           if (isRecord(request) && request.mode === "inventory") {
             return snapshot(command, options);
           }
-          return {
-            code: 1,
-            stdout: Buffer.alloc(0),
-            stderr: Buffer.from("snapshot rejected"),
-            termination: "exit",
-          };
+          const result = createCanarySnapshotResult(options.input, databasePath);
+          return { ...result, code: 1, stdout: "", stderr: "snapshot rejected" };
         });
       }
       if (failure === "doctor") {

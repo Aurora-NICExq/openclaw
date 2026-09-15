@@ -493,8 +493,7 @@ export function createManagedServiceManagerBoundary({
             });
           }
           // A real updater child is now validating, but the service has received no stop.
-          expect(parent.exitCode).toBeNull();
-          expect(parent.signalCode).toBeNull();
+          expect(parent).toMatchObject({ exitCode: null, signalCode: null });
           await expect(pathExists(commandsPath)).resolves.toBe(false);
           if (options.cancelDuringValidation) {
             const cancelled = waitForHandoffResponse(runningHelper.stdout, "cancelled");
@@ -550,8 +549,7 @@ export function createManagedServiceManagerBoundary({
                 { timeout: 5_000 },
               );
               await expect(pathExists(mutationPath)).resolves.toBe(false);
-              expect(parent.exitCode).toBeNull();
-              expect(parent.signalCode).toBeNull();
+              expect(parent).toMatchObject({ exitCode: null, signalCode: null });
             }
           }
         }
@@ -603,8 +601,7 @@ export function createManagedServiceManagerBoundary({
         } finally {
           clearTimeout(timer);
         }
-        expect(parent.signalCode).toBeNull();
-        expect(parent.exitCode).toBeNull();
+        expect(parent).toMatchObject({ exitCode: null, signalCode: null });
         await expect(pathExists(commandsPath)).resolves.toBe(false);
         expect(stdout).not.toContain("committed\n");
         await expect(pathExists(updaterPath)).resolves.toBe(false);
@@ -613,8 +610,7 @@ export function createManagedServiceManagerBoundary({
         runningHelper.stdin?.write("park\n");
         await cancelled;
         expect(await completion, stderr).toBe(0);
-        expect(parent.exitCode).toBeNull();
-        expect(parent.signalCode).toBeNull();
+        expect(parent).toMatchObject({ exitCode: null, signalCode: null });
         await expect(pathExists(updaterPath)).resolves.toBe(false);
       } else {
         const parked = waitForHandoffResponse(runningHelper.stdout, "parked");

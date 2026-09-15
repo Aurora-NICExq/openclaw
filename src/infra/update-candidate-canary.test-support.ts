@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { vi } from "vitest";
+import type { SpawnResult } from "../process/exec.js";
 
 export class FakeChild extends EventEmitter {
   pid: number;
@@ -13,22 +14,60 @@ export class FakeChild extends EventEmitter {
   }
 }
 
-export function createCanarySnapshotResult(input: string, databasePath?: string) {
+export function mockCanaryChildProcesses(
+  original: typeof import("node:child_process"),
+  spawn: typeof original.spawn,
+) {
+  return {
+    ...original,
+    spawn: new Proxy(original.spawn, {
+      apply(target, thisArg, args) {
+        const argv: unknown = args[1];
+        if (
+          Array.isArray(argv) &&
+          typeof argv[0] === "string" &&
+          /[/\\]dist[/\\](?:index|infra[/\\]update-migrated-finalize\.worker)\.js$/.test(argv[0])
+        ) {
+          return Reflect.apply(spawn, thisArg, args);
+        }
+        return Reflect.apply(target, thisArg, args);
+      },
+    }),
+  };
+}
+
+export function mockCanarySnapshotCommands(
+  original: typeof import("../process/exec.js"),
+  snapshot: typeof original.runUtf8CommandWithTimeout,
+) {
+  return {
+    ...original,
+    runUtf8CommandWithTimeout: (...args: Parameters<typeof original.runUtf8CommandWithTimeout>) => {
+      if (args[0].some((arg) => /[/\\]update-candidate-state\.worker\.[cm]?[jt]s$/.test(arg))) {
+        return snapshot(...args);
+      }
+      return original.runUtf8CommandWithTimeout(...args);
+    },
+  };
+}
+
+export function createCanarySnapshotResult(input: string, databasePath?: string): SpawnResult {
   const request: unknown = JSON.parse(input);
   return {
     code: 0,
-    stdout: Buffer.from(
-      JSON.stringify(
-        isRecord(request) && request.mode === "inventory"
-          ? {
-              databases: databasePath ? [[databasePath, { spellings: [databasePath] }]] : [],
-              pluginBytes: 0,
-              pluginPlan: "plugin-copy-plan.json",
-            }
-          : { versions: [], pluginPaths: {} },
-      ),
+    stdout: JSON.stringify(
+      isRecord(request) && request.mode === "inventory"
+        ? {
+            databases: databasePath ? [[databasePath, { spellings: [databasePath] }]] : [],
+            pluginBytes: 0,
+            pluginPlan: "plugin-copy-plan.json",
+          }
+        : { versions: [], pluginPaths: {} },
     ),
-    stderr: Buffer.alloc(0),
+    stderr: "",
+    signal: null,
+    killed: false,
+    cleanup: "normal",
     termination: "exit",
   };
 }
