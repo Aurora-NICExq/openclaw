@@ -60,6 +60,7 @@ type NativeSubagentMonitorClient = Pick<
 
 type ParentOwner = {
   turnId?: string;
+  isTurnYielded?: () => boolean;
   claimDirectChild?: (threadId: string) => (() => void) | undefined;
   rejectPendingDirectChild?: (threadId: string, reason: string) => void;
   onDirectChildAccepted?: () => void;
@@ -72,7 +73,7 @@ type ParentState = {
   owners: Map<symbol, ParentOwner>;
   // turn/started can precede bindTurn; retain receipt ownership until the
   // foreground run has finalized its reply and releases this registration.
-  turnIds: Set<string>;
+  turns: Map<string, { receipts: Map<string, "pending" | "sampled">; compacting: boolean }>;
   nativeCompletionReceipts: Set<string>;
   requesterSessionKey?: string;
   taskRuntimeScope?: AgentHarnessTaskRuntimeScope;
@@ -192,6 +193,7 @@ const NATIVE_SUBAGENT_NOTIFICATION_METHODS = new Set([
   // App-server exposes no typed terminal subagent result. Keep this one raw
   // boundary until its protocol provides the child's terminal status and text.
   "rawResponseItem/completed",
+  "rawResponse/completed",
 ]);
 const RECOVERY_REVISION_NOTIFICATION_METHODS = new Set([
   "thread/started",
@@ -217,6 +219,7 @@ function registerMonitor(params: {
   historyOwner?: CodexNativeSubagentHistoryOwner;
   agentId?: string;
   runtime?: NativeSubagentMonitorRuntime;
+  isTurnYielded?: () => boolean;
   retainClient?: () => (() => void) | undefined;
   retainParentThread?: (threadId: string) => (() => void) | undefined;
   claimDirectChild?: (threadId: string) => (() => void) | undefined;
@@ -286,6 +289,7 @@ function registerMonitor(params: {
     taskRuntimeScope: params.taskRuntimeScope,
     historyOwner: params.historyOwner,
     agentId: params.agentId,
+    isTurnYielded: params.isTurnYielded,
     claimDirectChild: params.claimDirectChild,
     rejectPendingDirectChild: params.rejectPendingDirectChild,
     onDirectChildAccepted: params.onDirectChildAccepted,
@@ -380,7 +384,7 @@ class Monitor {
     this.parentThreadRetentions.clear();
     for (const state of this.parentStates.values()) {
       state.owners.clear();
-      state.turnIds.clear();
+      state.turns.clear();
       this.deliverDetachedCompletions(state);
     }
     this.pendingDirectSpawnEvidence.clear();
@@ -401,6 +405,7 @@ class Monitor {
     taskRuntimeScope?: AgentHarnessTaskRuntimeScope;
     historyOwner?: CodexNativeSubagentHistoryOwner;
     agentId?: string;
+    isTurnYielded?: () => boolean;
     claimDirectChild?: (threadId: string) => (() => void) | undefined;
     rejectPendingDirectChild?: (threadId: string, reason: string) => void;
     onDirectChildAccepted?: () => void;
@@ -424,7 +429,7 @@ class Monitor {
       state = {
         parentThreadId,
         owners: new Map(),
-        turnIds: new Set(),
+        turns: new Map(),
         nativeCompletionReceipts: new Set(),
       };
       this.parentStates.set(parentThreadId, state);
@@ -435,6 +440,7 @@ class Monitor {
     state.agentId ??= params.agentId;
     const owner = Symbol("codex-native-subagent-owner");
     state.owners.set(owner, {
+      isTurnYielded: params.isTurnYielded,
       claimDirectChild: params.claimDirectChild,
       rejectPendingDirectChild: params.rejectPendingDirectChild,
       onDirectChildAccepted: params.onDirectChildAccepted,
@@ -471,7 +477,12 @@ class Monitor {
           return;
         }
         current.turnId = turnId;
-        registeredState.turnIds.add(turnId);
+        const turn = registeredState.turns.get(turnId);
+        if (!turn) {
+          registeredState.turns.set(turnId, { receipts: new Map(), compacting: false });
+        } else {
+          this.consumeSampledParentReceipts(registeredState, turnId);
+        }
         this.drainPendingDirectSpawnEvidence(registeredState, current, turnId);
         this.clearUnconsumablePendingDirectSpawnEvidence();
       },
@@ -485,10 +496,10 @@ class Monitor {
           const turnId = current.owners.get(owner)?.turnId;
           current.owners.delete(owner);
           if (turnId) {
-            current.turnIds.delete(turnId);
+            current.turns.delete(turnId);
           }
           if (current.owners.size === 0) {
-            current.turnIds.clear();
+            current.turns.clear();
             // In-flight recovery retains this run's receipts; a later run must
             // not inherit them merely because it reuses an agent path.
             current.nativeCompletionReceipts = new Set();
@@ -561,7 +572,9 @@ class Monitor {
     if (parent && parent.owners.size > 0 && notification.method === "turn/started") {
       const turnId = isJsonObject(params?.turn) ? readString(params.turn, "id") : undefined;
       if (turnId) {
-        parent.turnIds.add(turnId);
+        if (!parent.turns.has(turnId)) {
+          parent.turns.set(turnId, { receipts: new Map(), compacting: false });
+        }
       }
     }
     const tracksRecoveryRevision = Boolean(threadId && this.threadStatusRevisions.has(threadId));
@@ -602,8 +615,8 @@ class Monitor {
       }
       this.resumeChild(childState);
     }
-    if (parent && parent.turnIds.has(readString(params, "turnId") ?? "")) {
-      this.recordNativeCompletionDelivery(parent, notification);
+    if (parent) {
+      this.observeParentCompletionDelivery(parent, notification);
     }
     if (childState && !childState.terminal) {
       this.emitChildTaskActivity(notification, childState);
@@ -1547,11 +1560,57 @@ class Monitor {
     }
   }
 
-  private recordNativeCompletionDelivery(
+  private observeParentCompletionDelivery(
     state: ParentState,
     notification: CodexServerNotification,
   ): void {
+    const params = isJsonObject(notification.params) ? notification.params : undefined;
+    const turnId = readString(params, "turnId")?.trim();
+    const turn = turnId ? state.turns.get(turnId) : undefined;
+    if (!turnId || !turn) {
+      return;
+    }
+    const item = isJsonObject(params?.item) ? params.item : undefined;
+    if (readString(item, "type") === "contextCompaction") {
+      // Compaction emits raw response usage too, but does not resume the parent model.
+      if (notification.method === "item/started" || notification.method === "item/completed") {
+        turn.compacting = notification.method === "item/started";
+      }
+      return;
+    }
+    // Task teardown also persists unsampled mailbox input. Only a subsequent
+    // non-compaction model response proves consumption, including tool-only work.
     for (const agentPath of nativeSubagentNotifications.deliveredAgentPaths(notification)) {
+      turn.receipts.set(agentPath, "pending");
+    }
+    if (notification.method === "rawResponse/completed" && !turn.compacting) {
+      for (const agentPath of turn.receipts.keys()) {
+        turn.receipts.set(agentPath, "sampled");
+      }
+      this.consumeSampledParentReceipts(state, turnId);
+    }
+  }
+
+  private consumeSampledParentReceipts(state: ParentState, turnId: string): void {
+    const owner = this.resolveParentOwner(state, turnId);
+    const turn = state.turns.get(turnId);
+    if (!owner || owner.isTurnYielded?.() === true || !turn) {
+      return;
+    }
+    // Pre-bind samples wait for their exact owner; consumed paths must then
+    // leave this turn so a reused child cannot inherit a previous result.
+    const sampled: string[] = [];
+    for (const [agentPath, status] of turn.receipts) {
+      if (status === "sampled") {
+        sampled.push(agentPath);
+        turn.receipts.delete(agentPath);
+      }
+    }
+    this.recordNativeCompletionDelivery(state, sampled);
+  }
+
+  private recordNativeCompletionDelivery(state: ParentState, receipts: Iterable<string>): void {
+    for (const agentPath of receipts) {
       const key = buildParentAgentPathKey(state.parentThreadId, agentPath);
       // Native input can arrive before asynchronous history restores the child
       // mapping. Preserve the observed delivery, not a guess from task status.
@@ -2237,7 +2296,7 @@ class Monitor {
         state = {
           parentThreadId,
           owners: new Map(),
-          turnIds: new Set(),
+          turns: new Map(),
           nativeCompletionReceipts: new Set(),
           requesterSessionKey: candidate.requesterSessionKey,
           taskRuntimeScope: candidate.taskRuntimeScope,
