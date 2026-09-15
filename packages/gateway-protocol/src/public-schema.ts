@@ -674,6 +674,7 @@ export {
   WorktreesRestoreParamsSchema,
   WorktreesGcParamsSchema,
   WorktreesGcResultSchema,
+  WorktreesGcReportSchema,
   WorktreesBranchesParamsSchema,
   WorktreeBranchSchema,
   WorktreeRepositoryStatusSchema,
