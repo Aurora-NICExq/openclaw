@@ -1104,7 +1104,12 @@ describe("sessions_spawn tool", () => {
     },
   );
 
-  it("uses the target agent model for cross-agent visible sessions", async () => {
+  it.each([
+    { target: "main", requestedModel: undefined, expectedModel: "openai/gpt-5.6-sol" },
+    { target: "reviewer", requestedModel: undefined, expectedModel: "anthropic/claude-sonnet-4-6" },
+    { target: "main", requestedModel: "openai/gpt-5.6-luna", expectedModel: "openai/gpt-5.6-luna" },
+  ])("uses $expectedModel for a visible $target session", async (scenario) => {
+    const { target, requestedModel, expectedModel } = scenario;
     const callGateway = vi.fn(async () => ({
       key: "agent:reviewer:dashboard:child",
       runStarted: true,
@@ -1112,9 +1117,10 @@ describe("sessions_spawn tool", () => {
     }));
     const tool = createSessionsSpawnTool({
       agentSessionKey: "agent:main:main",
+      requesterModel: { provider: "openai", model: "gpt-5.6-sol" },
       config: {
         agents: {
-          defaults: { subagents: { allowAgents: ["reviewer"] } },
+          defaults: { subagents: { allowAgents: ["main", "reviewer"] } },
           list: [
             { id: "main" },
             { id: "reviewer", subagents: { model: "anthropic/claude-sonnet-4-6" } },
@@ -1128,15 +1134,16 @@ describe("sessions_spawn tool", () => {
 
     await tool.execute("visible-reviewer", {
       task: "review patch",
-      agentId: "reviewer",
+      agentId: target,
+      ...(requestedModel ? { model: requestedModel } : {}),
       visible: true,
     });
 
     expect(callGateway).toHaveBeenCalledWith(
       "sessions.create",
       expect.objectContaining({
-        agentId: "reviewer",
-        model: "anthropic/claude-sonnet-4-6",
+        agentId: target,
+        model: expectedModel,
         parentSessionKey: "agent:main:main",
         spawnDepth: 1,
       }),

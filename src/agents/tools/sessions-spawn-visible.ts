@@ -32,6 +32,7 @@ import { deleteSubagentSessionForCleanup } from "../subagents/registry/subagent-
 import { getSubagentDepthFromSessionStore } from "../subagents/spawn/subagent-depth.js";
 import { resolveSubagentSpawnOwnership } from "../subagents/spawn/subagent-spawn-ownership.js";
 import { resolveConfiguredSubagentRunTimeoutSeconds } from "../subagents/spawn/subagent-spawn-plan.js";
+import { readRequesterModel } from "../subagents/spawn/subagent-spawn-requester-prefs.js";
 import { buildSubagentTaskMessage } from "../subagents/spawn/subagent-system-prompt.js";
 import { resolveSubagentTargetPolicy } from "../subagents/spawn/subagent-target-policy.js";
 import { resolveAgentTimeoutMs } from "../timeout.js";
@@ -253,7 +254,20 @@ export async function maybeSpawnVisibleSession(params: {
     return { status: "forbidden", error: targetPolicy.error };
   }
   const resolvedModel =
-    modelOverride ?? resolveSubagentSpawnModelSelection({ cfg, agentId: targetAgentId });
+    modelOverride ??
+    resolveSubagentSpawnModelSelection({
+      cfg,
+      agentId: targetAgentId,
+      inheritedModel:
+        targetAgentId === requesterAgentId
+          ? (params.options?.requesterModel ??
+            readRequesterModel({
+              cfg,
+              requesterInternalKey: requesterKey,
+              requesterAgentId,
+            }))
+          : undefined,
+    });
   const runTimeoutSeconds = resolveConfiguredSubagentRunTimeoutSeconds({
     cfg,
     runTimeoutSeconds: params.runTimeoutSeconds,

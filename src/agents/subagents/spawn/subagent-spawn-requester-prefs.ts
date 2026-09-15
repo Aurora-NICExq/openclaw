@@ -14,26 +14,57 @@ import {
   resolveGatewaySessionStoreTarget,
 } from "./subagent-spawn.runtime.js";
 
-export function readRequesterThinkingLevel(params: {
+type RequesterPreferencesParams = {
   cfg: OpenClawConfig;
   requesterInternalKey: string;
   requesterAgentId?: string;
-}): string | undefined {
-  let entry: SessionEntry | undefined;
+};
+
+function readRequesterSessionEntry(params: RequesterPreferencesParams): SessionEntry | undefined {
   try {
     const target = resolveGatewaySessionStoreTarget({
       cfg: params.cfg,
       key: params.requesterInternalKey,
       agentId: params.requesterAgentId,
     });
-    entry = loadSessionEntry({
-      storePath: target.storePath,
-      sessionKey: target.canonicalKey,
-      clone: false,
-    });
+    return (
+      loadSessionEntry({
+        storePath: target.storePath,
+        sessionKey: target.canonicalKey,
+        clone: false,
+      }) ?? undefined
+    );
   } catch {
-    entry = undefined;
+    return undefined;
   }
+}
+
+export function readRequesterModel(params: RequesterPreferencesParams) {
+  const entry = readRequesterSessionEntry(params);
+  if (!entry) {
+    return undefined;
+  }
+  const normalizedOverride = normalizeStoredOverrideModel({
+    providerOverride: entry.providerOverride,
+    modelOverride: entry.modelOverride,
+    routeResolution: entry.modelOverrideRouteResolution,
+  });
+  return (
+    resolvePersistedSelectedModelRef({
+      defaultProvider: resolveDefaultModelForAgent({
+        cfg: params.cfg,
+        agentId: params.requesterAgentId,
+      }).provider,
+      runtimeProvider: entry.modelProvider,
+      runtimeModel: entry.model,
+      overrideProvider: normalizedOverride.providerOverride,
+      overrideModel: normalizedOverride.modelOverride,
+    }) ?? undefined
+  );
+}
+
+export function readRequesterThinkingLevel(params: RequesterPreferencesParams): string | undefined {
+  const entry = readRequesterSessionEntry(params);
   if (typeof entry?.thinkingLevel === "string" && entry.thinkingLevel.trim()) {
     return entry.thinkingLevel.trim();
   }
@@ -74,26 +105,8 @@ export function readRequesterThinkingLevel(params: {
   });
 }
 
-export function readRequesterFastMode(params: {
-  cfg: OpenClawConfig;
-  requesterInternalKey: string;
-  requesterAgentId?: string;
-}): FastMode {
-  let entry: SessionEntry | undefined;
-  try {
-    const target = resolveGatewaySessionStoreTarget({
-      cfg: params.cfg,
-      key: params.requesterInternalKey,
-      agentId: params.requesterAgentId,
-    });
-    entry = loadSessionEntry({
-      storePath: target.storePath,
-      sessionKey: target.canonicalKey,
-      clone: false,
-    });
-  } catch {
-    entry = undefined;
-  }
+export function readRequesterFastMode(params: RequesterPreferencesParams): FastMode {
+  const entry = readRequesterSessionEntry(params);
   const defaultModel = resolveDefaultModelForAgent({
     cfg: params.cfg,
     agentId: params.requesterAgentId,
