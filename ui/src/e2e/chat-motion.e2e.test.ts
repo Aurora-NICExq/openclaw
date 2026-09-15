@@ -10,9 +10,13 @@ import {
 } from "./chat-flow.test-support.ts";
 const suite = createChatFlowE2eSuite();
 const artifactDir = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR;
-type MotionWindow = Window & {
-  arrivals: Array<{ text: string; opacity: string; transform: string }>;
-};
+type MotionArrival = { text: string; opacity: string; transform: string };
+
+declare global {
+  interface Window {
+    openclawMotionArrivals?: MotionArrival[];
+  }
+}
 
 suite.define(() => {
   it.each([
@@ -31,8 +35,8 @@ suite.define(() => {
       });
       const page = await context.newPage();
       await page.addInitScript(() => {
-        const win = window as MotionWindow;
-        win.arrivals = [];
+        const arrivals: MotionArrival[] = [];
+        window.openclawMotionArrivals = arrivals;
         document.addEventListener("animationstart", (event) => {
           if (
             event.animationName !== "chat-message-enter" ||
@@ -41,7 +45,7 @@ suite.define(() => {
             return;
           }
           const style = getComputedStyle(event.target);
-          win.arrivals.push({
+          arrivals.push({
             text: event.target.dataset.messageText ?? "",
             opacity: style.opacity,
             transform: style.transform,
@@ -68,7 +72,7 @@ suite.define(() => {
         await page.goto(suite.server.baseUrl + "chat");
         await page.getByText("Existing message 39", { exact: false }).waitFor();
         await waitForChatScrollIdle(page);
-        expect(await page.evaluate(() => (window as MotionWindow).arrivals)).toHaveLength(0);
+        expect(await page.evaluate(() => window.openclawMotionArrivals)).toHaveLength(0);
         if (dir) {
           await page.screenshot({ path: path.join(dir, "01-history.png") });
         }
@@ -111,9 +115,7 @@ suite.define(() => {
         if (dir) {
           await page.screenshot({ path: path.join(dir, "03-reply.png") });
         }
-        expect(await page.evaluate(() => (window as MotionWindow).arrivals.length)).toBe(
-          expected * 2,
-        );
+        expect(await page.evaluate(() => window.openclawMotionArrivals)).toHaveLength(expected * 2);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
           true,
         );

@@ -1,7 +1,7 @@
 // Per-session virtualizer host: scroll anchoring, measurement, and row sync
 // for one transcript. Owned and swapped by ChatTranscriptController.
 import { VirtualizerController } from "@tanstack/lit-virtual";
-import { type Range, elementScroll, observeElementRect } from "@tanstack/virtual-core";
+import { elementScroll, observeElementRect } from "@tanstack/virtual-core";
 import {
   nothing,
   type ReactiveController,
@@ -45,11 +45,7 @@ import {
 } from "./chat-transcript-offset-observer.ts";
 import { activeTranscriptMessageId } from "./chat-transcript-position.ts";
 import { TranscriptPrependAnchor } from "./chat-transcript-prepend-anchor.ts";
-import {
-  extractTranscriptRange,
-  previewTranscriptRowKeys,
-  focusedTranscriptRowKey,
-} from "./chat-transcript-range.ts";
+import { previewTranscriptRowKeys, focusedTranscriptRowKey } from "./chat-transcript-range.ts";
 import {
   applyPendingScrollOffset,
   type TranscriptScrollRestoreHost,
@@ -222,7 +218,6 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
   private readonly prependAnchor = new TranscriptPrependAnchor();
   private candidateMessageRowKeysById: ReadonlyMap<string, string> = new Map();
   private candidateMessageRowsByKey: ReadonlyMap<string, string> = new Map();
-  private committedMessageRowsByKey: ReadonlyMap<string, string> = new Map();
   private renderPreviousRows: (() => TemplateResult) | null = null;
   private focusedRowKey: string | null = null;
   private readonly announcement = new TranscriptAnnouncementState();
@@ -296,7 +291,8 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
           callback,
         ),
       measureElement: measureTranscriptRow,
-      rangeExtractor: (range) => this.extractAnchoredRange(range, this.rowIndexesByKey),
+      rangeExtractor: (range) =>
+        this.prependAnchor.extractRange(range, this.rowIndexesByKey, this.focusedRowKey),
       // Virtual distance omits real padding, pinning readers ~80px up past scroll.ts's follow-lock.
       // scheduleCommittedChatScroll owns end-follow on content changes and source: "resize".
       // Disable isAtEnd()'s default too; callers must supply an explicit threshold.
@@ -517,7 +513,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
           announce && !this.offsetState.pendingScrollOffset,
         );
         this.messageRowKeysById = messageRows;
-        this.committedMessageRowsByKey = renderKeyRows;
+        this.prependAnchor.committedMessageRows = renderKeyRows;
         this.renderPreviousRows = () => this.renderCommittedRows(snapshot, false);
         // Capture only after the unmount gate permits the projection to commit.
         if (capturePrepend) {
@@ -727,19 +723,6 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     }
   }
 
-  /** Preserve the retained bubble even when a deferred offset selects another range. */
-  private extractAnchoredRange(range: Range, indexes: ReadonlyMap<string, number>): number[] {
-    const visible = extractTranscriptRange(range, indexes, this.focusedRowKey);
-    const messageKey = this.prependAnchor.messageKey;
-    const rowKey =
-      (messageKey === null ? null : this.committedMessageRowsByKey.get(messageKey)) ??
-      this.prependAnchor.rowKey;
-    const anchorIndex = rowKey === null ? undefined : indexes.get(rowKey);
-    return anchorIndex === undefined || visible.includes(anchorIndex)
-      ? visible
-      : [...visible, anchorIndex].toSorted((left, right) => left - right);
-  }
-
   private syncRows(nextKeys: readonly string[]): void {
     const virtualizer = this.virtualizerController.getVirtualizer();
     const typingAdded =
@@ -766,7 +749,8 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
       count: nextKeys.length,
       getItemKey: (index) => nextKeys[index] ?? `missing:${index}`,
       followOnAppend: false,
-      rangeExtractor: (range) => this.extractAnchoredRange(range, rowIndexesByKey),
+      rangeExtractor: (range) =>
+        this.prependAnchor.extractRange(range, rowIndexesByKey, this.focusedRowKey),
       scrollMargin: resolveTranscriptScrollMargin(this.scrollElement, this.headerHeight),
     });
     if (followTyping) {
