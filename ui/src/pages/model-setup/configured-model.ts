@@ -37,7 +37,7 @@ function failureGuidance(status: string): string | typeof nothing {
   return guidance[status] ?? guidance.unknown!;
 }
 
-export function renderModelSetupFailure(status: string, error: string): TemplateResult {
+function renderModelSetupFailure(status: string, error: string): TemplateResult {
   return html`
     <div class="model-setup__failure" role="alert">
       <span class="model-setup__failure-icon" aria-hidden="true">${icons.alertTriangle}</span>

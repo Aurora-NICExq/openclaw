@@ -15,7 +15,7 @@ export function formatModelSetupError(error: unknown): string {
   return formatUiError(error, t("modelSetup.errors.requestFailed"));
 }
 
-export async function captureModelSetupResult<T>(
+async function captureModelSetupResult<T>(
   client: GatewayBrowserClient,
   load: () => Promise<T>,
 ): Promise<ModelSetupTaskResult<T>> {
