@@ -14,7 +14,8 @@ import type {
   SessionEntryLifecycleRemoval,
 } from "./session-accessor.sqlite-contract.js";
 import type { SqliteLifecycleTargetSnapshot } from "./session-accessor.sqlite-entry-equality.js";
-import type { SessionEntryMaintenanceInput } from "./session-accessor.sqlite-maintenance-store.js";
+import type { SessionMaintenancePreservationSnapshot } from "./store-maintenance-preserve-snapshot.js";
+import type { ResolvedSessionMaintenanceConfig } from "./store-maintenance.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 // Shared plan shapes only. Runtime ownership stays in maintenance and lifecycle-state.
@@ -25,6 +26,16 @@ export type ReclamationDatabaseOptions = OpenClawAgentDatabaseOptions & {
 };
 
 export type ReclamationDeleteParams = Omit<DeleteSessionEntryLifecycleParams, "commitGuard">;
+
+export type SessionEntryMaintenanceInput = {
+  activeSessionKey?: string;
+  activeSessionKeys?: readonly string[];
+  archiveDirectory: string;
+  forceMaintenance?: boolean;
+  maintenance: ResolvedSessionMaintenanceConfig;
+  preservation: SessionMaintenancePreservationSnapshot;
+  storePath: string;
+};
 
 type SessionReclamationPlanBase = {
   databaseOptions: ReclamationDatabaseOptions;

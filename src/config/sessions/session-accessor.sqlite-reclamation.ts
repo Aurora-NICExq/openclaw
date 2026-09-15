@@ -46,6 +46,7 @@ import {
 import type {
   ReclamationDatabaseOptions,
   ReclamationDeleteParams,
+  SessionEntryMaintenanceInput,
   SessionEntryRemovalPlan,
   SqliteSessionReclamationPlan,
   SqliteSessionReclamationResult,
@@ -53,7 +54,6 @@ import type {
 import {
   applySessionEntryMaintenanceInDatabase,
   refreshSessionPlannerStatisticsInDatabase,
-  type SessionEntryMaintenanceInput,
 } from "./session-accessor.sqlite-maintenance-store.js";
 import { deleteSessionDeliveryArtifacts } from "./session-accessor.sqlite-node-artifacts.js";
 import { withSqliteReclamationAuthorization } from "./session-accessor.sqlite-reclamation-commit.js";

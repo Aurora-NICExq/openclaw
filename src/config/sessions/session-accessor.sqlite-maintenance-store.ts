@@ -15,7 +15,10 @@ import {
   planSessionStateDeleteIfUnreferenced,
   readSessionGenerationIdsForKeys,
 } from "./session-accessor.sqlite-lifecycle-state.js";
-import type { SessionEntryMaintenancePlan } from "./session-accessor.sqlite-lifecycle-types.js";
+import type {
+  SessionEntryMaintenanceInput,
+  SessionEntryMaintenancePlan,
+} from "./session-accessor.sqlite-lifecycle-types.js";
 import {
   collectSqliteSessionMaintenanceBaseKeys,
   readSessionMaintenanceAgeCandidates,
@@ -28,7 +31,6 @@ import {
   resolveSessionMaintenancePreserveKeys,
   type SessionMaintenancePreservationSnapshot,
 } from "./store-maintenance-preserve-snapshot.js";
-import type { ResolvedSessionMaintenanceConfig } from "./store-maintenance.js";
 
 export function readSessionTranscriptJsonlBytesInDatabase(
   database: Pick<OpenClawAgentDatabase, "db">,
@@ -62,16 +64,6 @@ export function refreshSessionPlannerStatisticsInDatabase(database: OpenClawAgen
     database.db.exec(`PRAGMA analysis_limit = ${previousLimit};`);
   }
 }
-
-export type SessionEntryMaintenanceInput = {
-  activeSessionKey?: string;
-  activeSessionKeys?: readonly string[];
-  archiveDirectory: string;
-  forceMaintenance?: boolean;
-  maintenance: ResolvedSessionMaintenanceConfig;
-  preservation: SessionMaintenancePreservationSnapshot;
-  storePath: string;
-};
 
 export function emptySessionEntryMaintenancePlan(): SessionEntryMaintenancePlan {
   return {
