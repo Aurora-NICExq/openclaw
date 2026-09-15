@@ -56,6 +56,7 @@ function resolveRequesterModel(params: RequesterPreferencesContext, entry?: Sess
     runtimeModel: entry.model,
     overrideProvider: normalizedOverride.providerOverride,
     overrideModel: normalizedOverride.modelOverride,
+    overrideRouteResolution: entry.modelOverrideRouteResolution,
   });
   return { defaultModel, selectedModel };
 }

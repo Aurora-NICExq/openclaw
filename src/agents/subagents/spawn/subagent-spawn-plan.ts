@@ -65,7 +65,7 @@ export function resolveSubagentModelAndThinkingPlan(params: {
   inheritedModel?: ModelRef;
   fastMode?: FastMode;
 }) {
-  const rawResolvedModel = resolveSubagentSpawnModelSelection({
+  const { model: rawResolvedModel } = resolveSubagentSpawnModelSelection({
     cfg: params.cfg,
     agentId: params.targetAgentId,
     modelOverride: params.modelOverride,

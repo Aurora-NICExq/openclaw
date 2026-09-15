@@ -253,11 +253,11 @@ export async function maybeSpawnVisibleSession(params: {
   if (!targetPolicy.ok) {
     return { status: "forbidden", error: targetPolicy.error };
   }
-  const resolvedModel =
-    modelOverride ??
+  const { model: resolvedModel, resolvedModel: inheritedModel } =
     resolveSubagentSpawnModelSelection({
       cfg,
       agentId: targetAgentId,
+      modelOverride,
       inheritedModel:
         targetAgentId === requesterAgentId
           ? (params.options?.requesterModel ??
@@ -348,6 +348,7 @@ export async function maybeSpawnVisibleSession(params: {
             allow: [...(params.options?.inheritedToolAllowlist ?? [])],
             deny: [...(params.options?.inheritedToolDenylist ?? [])],
           },
+          ...(inheritedModel ? { resolvedModel: inheritedModel } : {}),
         }));
     let response: {
       key?: string;

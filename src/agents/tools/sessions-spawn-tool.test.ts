@@ -1108,16 +1108,26 @@ describe("sessions_spawn tool", () => {
     { target: "main", requestedModel: undefined, expectedModel: "openai/gpt-5.6-sol" },
     { target: "reviewer", requestedModel: undefined, expectedModel: "anthropic/claude-sonnet-4-6" },
     { target: "main", requestedModel: "openai/gpt-5.6-luna", expectedModel: "openai/gpt-5.6-luna" },
+    {
+      target: "main",
+      requestedModel: undefined,
+      requesterModel: { provider: "custom", model: "custom/model" },
+      expectedModel: "custom/custom/model",
+    },
   ])("uses $expectedModel for a visible $target session", async (scenario) => {
     const { target, requestedModel, expectedModel } = scenario;
-    const callGateway = vi.fn(async () => ({
+    const callGateway = hoisted.inProcessCreationMock.mockResolvedValue({
       key: "agent:reviewer:dashboard:child",
       runStarted: true,
       runId: "run-reviewer",
-    }));
+    });
+    const requesterModel =
+      "requesterModel" in scenario
+        ? scenario.requesterModel
+        : { provider: "openai", model: "gpt-5.6-sol" };
     const tool = createSessionsSpawnTool({
       agentSessionKey: "agent:main:main",
-      requesterModel: { provider: "openai", model: "gpt-5.6-sol" },
+      requesterModel,
       config: {
         agents: {
           defaults: { subagents: { allowAgents: ["main", "reviewer"] } },
@@ -1127,7 +1137,6 @@ describe("sessions_spawn tool", () => {
           ],
         },
       },
-      callGateway: callGateway as never,
       registerRun: vi.fn(),
       countActiveRuns: () => 0,
     });
@@ -1147,8 +1156,15 @@ describe("sessions_spawn tool", () => {
         parentSessionKey: "agent:main:main",
         spawnDepth: 1,
       }),
+      expect.objectContaining({ via: "spawn", requesterSessionKey: "agent:main:main" }),
     );
     expect(mockCallArg(callGateway, 0, 1, "sessions.create")).not.toHaveProperty("fork");
+    const creation = mockCallArg(callGateway, 0, 2, "sessions.create");
+    if (target === "main" && requestedModel === undefined) {
+      expect(creation).toMatchObject({ resolvedModel: requesterModel });
+    } else {
+      expect(creation).not.toHaveProperty("resolvedModel");
+    }
   });
 
   it("rejects cross-agent visible transcript forks", async () => {
