@@ -16,7 +16,14 @@ import {
 import { buildSystemdUnit, splitSystemdLogicalLines } from "./systemd-unit.js";
 
 const execBusctlUser = vi.hoisted(() => vi.fn<typeof import("./systemd-exec.js").execBusctlUser>());
-vi.mock("./systemd-exec.js", () => ({ execBusctlUser }));
+vi.mock(import("./systemd-exec.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  execBusctlUser,
+}));
+// Manager responses below are fixtures, independent of the host user-manager transport.
+vi.mock("./systemd-user-transport.js", () => ({
+  resolveSystemdUserTransport: vi.fn(async () => undefined),
+}));
 
 const programArguments = ["/usr/bin/openclaw", "gateway", "run"];
 const literalDirectories = [
