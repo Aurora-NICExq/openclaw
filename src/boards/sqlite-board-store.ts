@@ -7,6 +7,7 @@ import type {
 import { resolveStateDir } from "../config/state-dir.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import {
+  getOpenClawAgentDatabaseIfOpen,
   resolveOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
   withOpenClawAgentDatabaseAsync,
@@ -20,6 +21,7 @@ import {
   type BoardSessionTarget,
   type BoardStore,
   type BoardWriteOptions,
+  type BoardWidgetWriteOptions,
   type BoardWidgetDocument,
   type BoardSnapshotWithHtmlViewMetadata,
   type BoardWidgetMcpAppDocument,
@@ -98,6 +100,7 @@ export class SqliteBoardStore implements BoardStore {
     options: BoardWriteOptions | undefined,
     operationLabel: string,
     operation: (database: OpenClawAgentDatabase, sessionKey: string) => T,
+    prepare?: () => Promise<void>,
   ): Promise<T> {
     const resolved = this.resolve(target);
     const env = { ...(this.options.env ?? process.env) };
@@ -128,9 +131,18 @@ export class SqliteBoardStore implements BoardStore {
       () =>
         withOpenClawAgentDatabaseAsync(
           databaseOptions,
-          (database) => {
+          async (database) => {
+            if (prepare) {
+              await prepare();
+            }
             // First-use schema work shares the data write's admission and current authority.
             assertCurrent();
+            if (prepare && getOpenClawAgentDatabaseIfOpen(databaseOptions) !== database) {
+              throw new BoardValidationError(
+                "invalid_operation",
+                "board database closed or changed; retry",
+              );
+            }
             ensureBoardSchema(database);
             return runOpenClawAgentWriteTransaction(
               (transactionDatabase) => {
@@ -204,15 +216,35 @@ export class SqliteBoardStore implements BoardStore {
     );
   }
 
-  async putWidget(params: BoardWidgetMaterializedPutParams, options?: BoardWriteOptions) {
+  async putWidget(params: BoardWidgetMaterializedPutParams, options?: BoardWidgetWriteOptions) {
     const viewGeneration = randomBytes(16).toString("hex");
-    return this.write(params, options, "board.put-widget", (database, sessionKey) =>
-      putBoardWidgetInDatabase(
-        database,
-        sessionKey,
-        normalizeBoardWidgetPutParams(params, sessionKey),
-        viewGeneration,
-      ),
+    let preparedParams = params;
+    const content = params.content;
+    const resolveInteraction = options?.resolveMcpAppInteraction;
+    const prepare =
+      content.kind === "mcp-app" && content.interactive && resolveInteraction
+        ? async () => {
+            if (!(await resolveInteraction())) {
+              preparedParams = {
+                ...params,
+                content: { ...content, interactive: false },
+                declared: undefined,
+              };
+            }
+          }
+        : undefined;
+    return this.write(
+      params,
+      options,
+      "board.put-widget",
+      (database, sessionKey) =>
+        putBoardWidgetInDatabase(
+          database,
+          sessionKey,
+          normalizeBoardWidgetPutParams(preparedParams, sessionKey),
+          viewGeneration,
+        ),
+      prepare,
     );
   }
 
