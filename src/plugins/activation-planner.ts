@@ -3,7 +3,7 @@ import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import type { OpenClawConfig } from "../config/types.js";
-import { normalizePluginsConfig } from "./config-state.js";
+import { normalizePluginsConfig, type NormalizedPluginsConfig } from "./config-state.js";
 import {
   hasExplicitManifestOwnerTrust,
   isBundledManifestOwner,
@@ -62,6 +62,7 @@ type PluginActivationPlan = {
 type ResolveManifestActivationPlanParams = {
   trigger: PluginActivationPlannerTrigger;
   config?: OpenClawConfig;
+  normalizedConfig?: NormalizedPluginsConfig;
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
   origin?: PluginOrigin;
@@ -103,7 +104,8 @@ function collectManifestActivationMatches(
   if (registry.plugins.length === 0 || onlyPluginIdSet?.size === 0) {
     return { pluginIds: [], diagnostics: registry.diagnostics };
   }
-  const normalizedConfig = normalizePluginsConfig(params.config?.plugins);
+  const normalizedConfig =
+    params.normalizedConfig ?? normalizePluginsConfig(params.config?.plugins);
   const expected = normalizeActivationTrigger(params.trigger);
   const rules =
     params.trigger.kind === "capability"
