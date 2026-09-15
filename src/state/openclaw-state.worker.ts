@@ -15,6 +15,8 @@ import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js
 import type { SqliteWorkerBackend } from "../infra/sqlite-worker-contract.js";
 import { getSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { isPluginStateWorkerCommand } from "../plugin-state/plugin-state-worker-contract.js";
+import { executePluginStateCommand } from "../plugin-state/plugin-state.worker.js";
 import { readPluginMetadataStateRowSync } from "../plugins/installed-plugin-index-row.js";
 import {
   ensureProjectRegistrySchema,
@@ -47,6 +49,7 @@ import {
   summarizeTaskRecordsForFlowInDatabase,
 } from "../tasks/task-registry.store.kernel.js";
 import { readTaskRegistryStatusSnapshot } from "../tasks/task-registry.store.status.js";
+import { recordBackupRunInDatabase } from "./backup-run-records.kernel.js";
 import {
   openClawStateDatabaseCache,
   retainOpenClawStateDatabase,
@@ -266,6 +269,17 @@ function createSharedStateWorkerBackend(
           };
         }
       }
+      if (isPluginStateWorkerCommand(command)) {
+        return executePluginStateCommand(
+          command,
+          {
+            path: context.databasePath,
+            env: getSqliteWorkerStateContext().environment,
+          },
+          open,
+          nativeDatabase?.db.isOpen === true,
+        );
+      }
       if (command.type === "config.health.read") {
         const read = command.input.artifactPreserving
           ? withExistingOpenClawStateDatabaseArtifactPreservingReadOnly
@@ -303,6 +317,12 @@ function createSharedStateWorkerBackend(
         path: context.databasePath,
         env: getSqliteWorkerStateContext().environment,
       };
+      if (command.type === "backup.recordOutcome") {
+        return runOpenClawStateWriteTransaction(
+          ({ db }) => recordBackupRunInDatabase(db, command.input),
+          writeOptions,
+        );
+      }
       if (command.type === "projects.findRoot") {
         ensureProjectRegistrySchema(writeOptions);
         return resolveRecordedProjectRootInDatabase(database.db, command.input.repoRoot);
