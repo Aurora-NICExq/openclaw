@@ -24,6 +24,7 @@ import {
 import { resolveRuntimeServiceBuildId, resolveRuntimeServiceVersion } from "../../../version.js";
 import { verifyAgentRuntimeIdentityToken } from "../../agent-runtime-identity-token.js";
 import { buildAuthenticatedPresenceUser } from "../../authenticated-presence-user.js";
+import { prepareGatewayRecipientProfile } from "../../expected-profile.js";
 import { shouldUseGatewayOwnerProfile } from "../../gateway-owner-profile.js";
 import { createAuthenticatedGitHubIdentitySync } from "../../github-user-identity.js";
 import {
@@ -45,7 +46,6 @@ import {
 import { WEBSOCKET_OPEN_READY_STATE } from "../../server-constants.js";
 import { formatForLog, logWs } from "../../ws-log.js";
 import { truncateCloseReason } from "../close-reason.js";
-import { broadcastPresenceSnapshot } from "../presence-events.js";
 import type { GatewayWsClient } from "../ws-types.js";
 import {
   rejectGatewayConnectOrigin,
@@ -64,7 +64,6 @@ import type {
   DeviceAuthorizedGatewayConnect,
   GatewayConnectPhaseContext,
 } from "./message-handler-types.js";
-import { prepareGatewayReceiverHandoff } from "./request-start.js";
 
 /** Match production release versions (YYYY.M.PATCH or YYYY.M.PATCH-beta.N). */
 const RELEASED_VERSION_RE = /^\d{4}\.\d+\.\d+/;
@@ -74,10 +73,6 @@ type AuthenticatedNodePairingAdmission = NonNullable<
 > & {
   authenticated: { nodeId: string; publicKey: string; token: string };
 };
-
-function isReleasedVersion(version: string): boolean {
-  return RELEASED_VERSION_RE.test(version);
-}
 
 export async function attachAuthenticatedGatewayConnect(
   context: GatewayConnectPhaseContext,
@@ -417,6 +412,7 @@ export async function attachAuthenticatedGatewayConnect(
     connect: connectParams,
     connId,
     connectionKind: "gateway",
+    ...(!usesLegacyNodeProtocol && pluginSurfaceBaseUrl ? { pluginSurfaceBaseUrl } : {}),
     isDeviceTokenAuth: authMethod === "device-token",
     pairedClientId: isBrowserCopilotClient(connectParams.client)
       ? connectParams.client.id
@@ -445,12 +441,14 @@ export async function attachAuthenticatedGatewayConnect(
     ) {
       return;
     }
+    nextClient.preparedRecipientProfileId = undefined;
     const profile = resolveAuthenticatedProfile(profileId, updatedAt);
     if (nextClient.authenticatedUserProfile) {
       Object.assign(nextClient.authenticatedUserProfile, profile);
     } else {
       nextClient.authenticatedUserProfile = profile;
     }
+    prepareGatewayRecipientProfile(nextClient);
     attachGatewayLocalUserIngress(
       nextClient,
       prepareLocalUserIngress(nextClient.authenticatedUserProfile),
@@ -486,8 +484,8 @@ export async function attachAuthenticatedGatewayConnect(
         clientVersion &&
         gatewayVersion &&
         clientVersion !== gatewayVersion &&
-        isReleasedVersion(gatewayVersion) &&
-        isReleasedVersion(clientVersion)
+        RELEASED_VERSION_RE.test(gatewayVersion) &&
+        RELEASED_VERSION_RE.test(clientVersion)
       ) {
         logWsControl.info(
           `node version mismatch conn=${connId} client=${formatForLog(clientLabel)} clientVersion=${formatForLog(clientVersion)} gatewayVersion=${gatewayVersion}; closing for supervisor restart`,
@@ -538,15 +536,16 @@ export async function attachAuthenticatedGatewayConnect(
     }
     return;
   }
-  const handoffReceiver = prepareGatewayReceiverHandoff(socket, role);
-  if (!handoffReceiver) {
-    const message = "unsupported Gateway WebSocket receiver";
-    markHandshakeFailure("unsupported-websocket-receiver", {});
+  const handoffReceiver = context.handler.prepareAuthenticatedReceive(role);
+  if (!handoffReceiver.ok) {
+    const { cause, message } = handoffReceiver.error;
+    markHandshakeFailure(cause, {});
     sendHandshakeErrorResponse(ErrorCodes.UNAVAILABLE, message);
     await releasePendingNodePairingCleanup();
     close(1011, message);
     return;
   }
+  prepareGatewayRecipientProfile(nextClient);
   if (!setClient(nextClient)) {
     await releasePendingNodePairingCleanup();
     setCloseCause("connect-aborted-before-register", {
@@ -557,7 +556,7 @@ export async function attachAuthenticatedGatewayConnect(
   }
   // Only registered operators use bounded router starts. Node lifecycle traffic,
   // workers and preauth retain native yielding and their existing queue/drain rules.
-  handoffReceiver();
+  handoffReceiver.value();
   setHandshakeState("connected");
   advanceHandshakePhase("session_attached");
   logWs("in", "connect", {
@@ -597,6 +596,7 @@ export async function attachAuthenticatedGatewayConnect(
     const authenticatedPresenceUser = currentAuthenticatedPresenceUser();
     upsertPresence(presenceKey, {
       host: connectParams.client.displayName ?? connectParams.client.id ?? os.hostname(),
+      clientId: connectParams.client.id,
       ip: isLocalClient ? undefined : reportedClientIp,
       version: connectParams.client.version,
       platform: connectParams.client.platform,
@@ -611,9 +611,6 @@ export async function attachAuthenticatedGatewayConnect(
       ...(authenticatedPresenceUser ? { user: authenticatedPresenceUser } : {}),
       reason: "connect",
     });
-    // Publish the completed row before hello snapshots it; existing readers do
-    // not receive this connection's hello and must not wait for later activity.
-    broadcastPresenceSnapshot(buildRequestContext());
   }
   if (admittedNodePairing) {
     const pairingGeneration = admittedNodePairing.generation?.key;
@@ -645,6 +642,7 @@ export async function attachAuthenticatedGatewayConnect(
           // The node socket is registered before macOS app command handlers finish warming.
           // Delay only the connect-time probe; later skill refreshes use the live session.
           readinessDelayMs: 5_000,
+          readinessSignal: context.handler.connectionWork.signal,
         });
       },
       (err) =>

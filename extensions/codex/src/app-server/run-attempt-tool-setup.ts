@@ -3,6 +3,7 @@ import {
   isHostScopedAgentToolActive,
   materializeRequesterScopedMcpToolsForHarnessRun,
   resolveAgentDir,
+  runAgentCleanupStep,
   type EmbeddedRunAttemptParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
@@ -96,6 +97,7 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
   }
   const toolState: {
     yieldDetected: boolean;
+    yieldMessage?: string;
     yieldAcknowledgment?: string;
     persistentWebSearchAllowed?: boolean;
     webSearchAllowed: boolean;
@@ -232,8 +234,9 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
           cronCreatorAuthorityUnavailableReason: "queued-local-operator-configured-mcp" as const,
         }
       : {}),
-    onYieldDetected: (acknowledgment: string | undefined) => {
+    onYieldDetected: (message: string, acknowledgment: string | undefined) => {
       toolState.yieldDetected = true;
+      toolState.yieldMessage = message;
       toolState.yieldAcknowledgment = acknowledgment;
     },
     claimYieldCompletion: () => runtimeYieldCompletionClaim.current?.() ?? false,
@@ -271,8 +274,9 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
   let nativeSpecs: CodexDynamicToolSpec[] | undefined;
   if (hasCodexNativeToolCatalog(mutable.startupBinding)) {
     runAbortController.signal.throwIfAborted();
-    params.hostCapabilities.assertActive();
+    connection.assertCurrent();
     const client = await connection.attemptClientFactory({
+      assertCurrent: connection.assertCurrent,
       startOptions: connection.appServer.start,
       authProfileId: connection.startupClientAuthProfileId,
       agentDir,
@@ -287,16 +291,20 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
         agentDir,
         assertCurrent: () => {
           runAbortController.signal.throwIfAborted();
-          params.hostCapabilities.assertActive();
+          connection.assertCurrent();
         },
       });
     } finally {
       releaseLeasedSharedCodexAppServerClient(client);
     }
   }
+  let requireExplicitMessageTarget: boolean | undefined;
   const tools = await buildDynamicTools({
     ...commonToolParams,
     registerRunCleanup: (cleanup) => runCleanups.push(cleanup),
+    onMessageToolTargetResolved: (required) => {
+      requireExplicitMessageTarget = required;
+    },
     cronCreatorToolAllowlistRef: cronCreatorToolAllowlist,
     cronCreatorToolAllowlistCaptureRef,
     onPersistentWebSearchPolicyResolved: (allowed) => {
@@ -370,6 +378,55 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
     ...(params.memberRoleIds?.length ? { roleIds: [...params.memberRoleIds] } : {}),
   };
   const hasRequester = Object.keys(requester).length > 0;
+  type HarnessMcpInteractiveApproval = NonNullable<
+    Parameters<
+      typeof materializeRequesterScopedMcpToolsForHarnessRun
+    >[0]["requestInteractiveCodexApproval"]
+  >;
+  // Shared per-call MCP approval callback for dynamic (bridge) tools. Requester-scoped
+  // tools must enter the same approval boundary as the configured path before any
+  // executor dispatch.
+  const requestInteractiveMcpApproval: HarnessMcpInteractiveApproval = async (approval) => {
+    const allowedDecisions: ExecApprovalDecision[] =
+      approval.mode === "prompt" ? ["allow-once", "deny"] : ["allow-once", "allow-always", "deny"];
+    const outcome = await requestPluginApprovalOutcome({
+      hostCapabilities: params.hostCapabilities,
+      signal: approval.signal,
+      title: `Run MCP tool ${approval.serverName}/${approval.toolName}`,
+      description: `Codex approval mode "${approval.mode}" requires an operator decision before this MCP tool runs. ${formatMcpCodexApprovalRemedy(approval.serverName)}`,
+      allowedDecisions,
+      toolName: approval.safeToolName,
+      toolCallId: approval.toolCallId,
+      mcpTool: { server: approval.serverName, tool: approval.toolName },
+      isMcpToolApprovalActive: approval.isActive,
+    });
+    if (outcome !== "approved-once" && outcome !== "approved-session") {
+      throw new Error(
+        `${approval.serverName}/${approval.toolName}: interactive Codex approval (${approval.mode}) was not granted: ${outcome}`,
+      );
+    }
+  };
+  // Requester-scoped tools never consume stored approval grants (requester servers are
+  // excluded from the native grant projection), so offer only effective decisions:
+  // allow-once or deny. Allow Always would re-prompt on every subsequent call.
+  const requestRequesterMcpApproval: HarnessMcpInteractiveApproval = async (approval) => {
+    const outcome = await requestPluginApprovalOutcome({
+      hostCapabilities: params.hostCapabilities,
+      signal: approval.signal,
+      title: `Run MCP tool ${approval.serverName}/${approval.toolName}`,
+      description: `Codex approval mode "${approval.mode}" requires an operator decision before this MCP tool runs. ${formatMcpCodexApprovalRemedy(approval.serverName)}`,
+      allowedDecisions: ["allow-once", "deny"],
+      toolName: approval.safeToolName,
+      toolCallId: approval.toolCallId,
+      mcpTool: { server: approval.serverName, tool: approval.toolName },
+      isMcpToolApprovalActive: approval.isActive,
+    });
+    if (outcome !== "approved-once" && outcome !== "approved-session") {
+      throw new Error(
+        `${approval.serverName}/${approval.toolName}: interactive Codex approval (${approval.mode}) was not granted: ${outcome}`,
+      );
+    }
+  };
   const configuredMcp = configuredMcpSurface
     ? await materializeStaticMcpToolsForHarnessRun({
         sessionId: params.sessionId,
@@ -387,30 +444,7 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
         ),
         projectedMcpServers: bundleMcpThreadConfig.configPatch?.mcp_servers,
         ...(configuredMcpSurface === "transient"
-          ? {
-              requestInteractiveCodexApproval: async (approval) => {
-                const allowedDecisions: ExecApprovalDecision[] =
-                  approval.mode === "prompt"
-                    ? ["allow-once", "deny"]
-                    : ["allow-once", "allow-always", "deny"];
-                const outcome = await requestPluginApprovalOutcome({
-                  hostCapabilities: params.hostCapabilities,
-                  signal: approval.signal,
-                  title: `Run MCP tool ${approval.serverName}/${approval.toolName}`,
-                  description: `Codex approval mode "${approval.mode}" requires an operator decision before this MCP tool runs. ${formatMcpCodexApprovalRemedy(approval.serverName)}`,
-                  allowedDecisions,
-                  toolName: approval.safeToolName,
-                  toolCallId: approval.toolCallId,
-                  mcpTool: { server: approval.serverName, tool: approval.toolName },
-                  isMcpToolApprovalActive: approval.isActive,
-                });
-                if (outcome !== "approved-once" && outcome !== "approved-session") {
-                  throw new Error(
-                    `${approval.serverName}/${approval.toolName}: interactive Codex approval (${approval.mode}) was not granted: ${outcome}`,
-                  );
-                }
-              },
-            }
+          ? { requestInteractiveCodexApproval: requestInteractiveMcpApproval }
           : {}),
         policyContext,
         warn: (message) => embeddedAgentLog.warn(message),
@@ -420,6 +454,20 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
   // Specs come from the session advertised-catalog cache so fingerprints stay stable.
   let scopedMcpTools: Awaited<ReturnType<typeof materializeRequesterScopedMcpToolsForHarnessRun>> =
     undefined;
+  const disposeMcpTools = async () => {
+    for (const [step, materialized] of [
+      ["codex-scoped-mcp-dispose", scopedMcpTools],
+      ["codex-configured-mcp-dispose", configuredMcp],
+    ] as const) {
+      await runAgentCleanupStep({
+        runId: params.runId,
+        sessionId: params.sessionId,
+        step,
+        log: embeddedAgentLog,
+        cleanup: async () => materialized?.dispose(),
+      });
+    }
+  };
   try {
     scopedMcpTools = authenticatedScheduledMode
       ? undefined
@@ -431,6 +479,10 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
           cfg: params.config,
           manifestRegistry: bundleManifestRegistry,
           toolOverrides: codexMcpToolOverrides,
+          autoApproveCodexAppServerApprovals: shouldAutoApproveCodexAppServerApprovals(
+            connection.appServer,
+          ),
+          requestInteractiveCodexApproval: requestRequesterMcpApproval,
           requesterSenderId: params.senderId,
           agentAccountId: params.agentAccountId,
           messageChannel: params.messageChannel ?? params.messageProvider,
@@ -499,6 +551,7 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
       }),
       directToolNames: resolveCodexDynamicToolDirectNames(
         params,
+        registeredWithScopedMcp,
         isHostScopedAgentToolActive("openclaw"),
       ),
       hookContext,
@@ -616,8 +669,10 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
     return {
       tools: toolsWithScopedMcp,
       registeredTools: registeredWithScopedMcp,
+      requireExplicitMessageTarget,
       scopedMcpTools,
       configuredMcp,
+      disposeMcpTools,
       configuredMcpOwnershipVersion:
         configuredMcpSurface === "scheduled" ? (1 as const) : undefined,
       captureCronCreatorToolAllowlist,
@@ -637,8 +692,7 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
   } catch (error) {
     // Materialized runtimes are attempt-owned only after this function returns.
     // Dispose here when filtering, schema projection, or bridge setup fails first.
-    await scopedMcpTools?.dispose();
-    await configuredMcp?.dispose();
+    await disposeMcpTools();
     throw error;
   }
 }

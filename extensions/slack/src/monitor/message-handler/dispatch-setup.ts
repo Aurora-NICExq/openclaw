@@ -34,6 +34,10 @@ import type { PreparedSlackMessage } from "./types.js";
 export async function createSlackDispatchSetup(prepared: PreparedSlackMessage) {
   const { ctx, account, message, route } = prepared;
   const slackClient = prepared.eventScope?.client ?? ctx.app.client;
+  const slackClientOptions = {
+    ...ctx.app.webClientOptions,
+    ...(prepared.eventScope ? { teamId: prepared.eventScope.teamId } : {}),
+  };
   const slackStreamFallbackTeamId = prepared.eventScope?.teamId ?? ctx.teamId;
   const cfg = ctx.cfg;
   const runtime = ctx.runtime;
@@ -192,7 +196,6 @@ export async function createSlackDispatchSetup(prepared: PreparedSlackMessage) {
             status: "processing",
             // Initialize new sessions with core's derived label; later title changes use rename.
             title: prepared.sessionDisplayName ?? prepared.ctxPayload.ThreadLabel,
-            route: { ...route, sessionKey: prepared.ctxPayload.SessionKey ?? route.sessionKey },
             eventScope: prepared.eventScope,
           });
         }
@@ -264,13 +267,15 @@ export async function createSlackDispatchSetup(prepared: PreparedSlackMessage) {
     (hookRunner?.hasHooks("message_sending") ?? false);
   // Portable previews and native progress cards exist before outbound modifiers accept the
   // payload. Native answer streaming stays enabled because it begins after both hook gates.
-  const allowPreHookProviderStreaming = !modifyingHooksRegistered;
+  const allowPreHookProviderStreaming =
+    !prepared.ctxPayload.GroupThread && !modifyingHooksRegistered;
   const previewStreamingEnabled =
     allowPreHookProviderStreaming && !sourceRepliesAreToolOnly && slackStreaming.mode !== "off";
   const hasSlackCustomIdentity = Boolean(
     slackIdentity?.username || slackIdentity?.iconUrl || slackIdentity?.iconEmoji,
   );
   const streamingEnabled =
+    !prepared.ctxPayload.GroupThread &&
     !sourceRepliesAreToolOnly &&
     (allowPreHookProviderStreaming || slackStreaming.mode !== "progress") &&
     isSlackStreamingEnabled({
@@ -292,11 +297,6 @@ export async function createSlackDispatchSetup(prepared: PreparedSlackMessage) {
         blockStreamingEnabled,
       });
 
-  const onSlackDeliveryError = (err: unknown, info: { kind: string }) => {
-    runtime.error?.(danger(`slack ${info.kind} reply failed: ${formatSlackError(err)}`));
-    replyPipeline.typingCallbacks?.onIdle?.();
-  };
-
   return {
     prepared,
     ctx,
@@ -304,6 +304,7 @@ export async function createSlackDispatchSetup(prepared: PreparedSlackMessage) {
     message,
     route,
     slackClient,
+    slackClientOptions,
     slackStreamFallbackTeamId,
     cfg,
     runtime,
@@ -335,7 +336,6 @@ export async function createSlackDispatchSetup(prepared: PreparedSlackMessage) {
     shouldUseDraftStream,
     disableBlockStreaming,
     useStreaming,
-    onSlackDeliveryError,
   };
 }
 
