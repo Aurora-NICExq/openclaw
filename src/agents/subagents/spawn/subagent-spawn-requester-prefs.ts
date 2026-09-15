@@ -14,57 +14,61 @@ import {
   resolveGatewaySessionStoreTarget,
 } from "./subagent-spawn.runtime.js";
 
-type RequesterPreferencesParams = {
+type RequesterPreferencesContext = {
   cfg: OpenClawConfig;
   requesterInternalKey: string;
   requesterAgentId?: string;
 };
 
-function readRequesterSessionEntry(params: RequesterPreferencesParams): SessionEntry | undefined {
+function readRequesterSession(params: RequesterPreferencesContext): SessionEntry | undefined {
   try {
     const target = resolveGatewaySessionStoreTarget({
       cfg: params.cfg,
       key: params.requesterInternalKey,
       agentId: params.requesterAgentId,
     });
-    return (
-      loadSessionEntry({
-        storePath: target.storePath,
-        sessionKey: target.canonicalKey,
-        clone: false,
-      }) ?? undefined
-    );
+    return loadSessionEntry({
+      storePath: target.storePath,
+      sessionKey: target.canonicalKey,
+      clone: false,
+    });
   } catch {
     return undefined;
   }
 }
 
-export function readRequesterModel(params: RequesterPreferencesParams) {
-  const entry = readRequesterSessionEntry(params);
+function resolveRequesterModel(params: RequesterPreferencesContext, entry?: SessionEntry) {
+  const defaultModel = resolveDefaultModelForAgent({
+    cfg: params.cfg,
+    agentId: params.requesterAgentId,
+  });
   if (!entry) {
-    return undefined;
+    return { defaultModel, selectedModel: undefined };
   }
   const normalizedOverride = normalizeStoredOverrideModel({
     providerOverride: entry.providerOverride,
     modelOverride: entry.modelOverride,
     routeResolution: entry.modelOverrideRouteResolution,
   });
-  return (
-    resolvePersistedSelectedModelRef({
-      defaultProvider: resolveDefaultModelForAgent({
-        cfg: params.cfg,
-        agentId: params.requesterAgentId,
-      }).provider,
-      runtimeProvider: entry.modelProvider,
-      runtimeModel: entry.model,
-      overrideProvider: normalizedOverride.providerOverride,
-      overrideModel: normalizedOverride.modelOverride,
-    }) ?? undefined
-  );
+  const selectedModel = resolvePersistedSelectedModelRef({
+    defaultProvider: defaultModel.provider,
+    runtimeProvider: entry.modelProvider,
+    runtimeModel: entry.model,
+    overrideProvider: normalizedOverride.providerOverride,
+    overrideModel: normalizedOverride.modelOverride,
+  });
+  return { defaultModel, selectedModel };
 }
 
-export function readRequesterThinkingLevel(params: RequesterPreferencesParams): string | undefined {
-  const entry = readRequesterSessionEntry(params);
+export function readRequesterModel(params: RequesterPreferencesContext) {
+  const entry = readRequesterSession(params);
+  return entry ? (resolveRequesterModel(params, entry).selectedModel ?? undefined) : undefined;
+}
+
+export function readRequesterThinkingLevel(
+  params: RequesterPreferencesContext,
+): string | undefined {
+  const entry = readRequesterSession(params);
   if (typeof entry?.thinkingLevel === "string" && entry.thinkingLevel.trim()) {
     return entry.thinkingLevel.trim();
   }
@@ -74,58 +78,18 @@ export function readRequesterThinkingLevel(params: RequesterPreferencesParams): 
   if (requesterAgentThinking) {
     return requesterAgentThinking;
   }
-  const defaultModel = resolveDefaultModelForAgent({
-    cfg: params.cfg,
-    agentId: params.requesterAgentId,
-  });
-  if (entry) {
-    const normalizedOverride = normalizeStoredOverrideModel({
-      providerOverride: entry.providerOverride,
-      modelOverride: entry.modelOverride,
-    });
-    const persistedModel = resolvePersistedSelectedModelRef({
-      defaultProvider: defaultModel.provider,
-      runtimeProvider: entry.modelProvider,
-      runtimeModel: entry.model,
-      overrideProvider: normalizedOverride.providerOverride,
-      overrideModel: normalizedOverride.modelOverride,
-    });
-    if (persistedModel) {
-      return resolveThinkingDefault({
-        cfg: params.cfg,
-        provider: persistedModel.provider,
-        model: persistedModel.model,
-      });
-    }
-  }
+  const { defaultModel, selectedModel } = resolveRequesterModel(params, entry);
+  const model = selectedModel ?? defaultModel;
   return resolveThinkingDefault({
     cfg: params.cfg,
-    provider: defaultModel.provider,
-    model: defaultModel.model,
+    provider: model.provider,
+    model: model.model,
   });
 }
 
-export function readRequesterFastMode(params: RequesterPreferencesParams): FastMode {
-  const entry = readRequesterSessionEntry(params);
-  const defaultModel = resolveDefaultModelForAgent({
-    cfg: params.cfg,
-    agentId: params.requesterAgentId,
-  });
-  const normalizedOverride = entry
-    ? normalizeStoredOverrideModel({
-        providerOverride: entry.providerOverride,
-        modelOverride: entry.modelOverride,
-      })
-    : {};
-  const selectedModel = entry
-    ? resolvePersistedSelectedModelRef({
-        defaultProvider: defaultModel.provider,
-        runtimeProvider: entry.modelProvider,
-        runtimeModel: entry.model,
-        overrideProvider: normalizedOverride.providerOverride,
-        overrideModel: normalizedOverride.modelOverride,
-      })
-    : undefined;
+export function readRequesterFastMode(params: RequesterPreferencesContext): FastMode {
+  const entry = readRequesterSession(params);
+  const { defaultModel, selectedModel } = resolveRequesterModel(params, entry);
   return resolveFastModeState({
     cfg: params.cfg,
     provider: selectedModel?.provider ?? defaultModel.provider,
