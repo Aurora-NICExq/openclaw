@@ -212,6 +212,60 @@ describe("buildPollResultsSummary", () => {
     expect(summary?.totalVotes).toBe(2);
   });
 
+  it.each([
+    { name: "nonfinite closing times", endTimes: [undefined, NaN, Infinity], closed: false },
+    { name: "the earliest finite closing time", endTimes: [1, -0], closed: true },
+  ])("preserves vote ordering with $name", ({ endTimes, closed }) => {
+    const votes: Array<[string, number | undefined, string]> = [
+      ["$z", NaN, "answer2"],
+      ["$a", undefined, "answer1"],
+      ["$after", 0.5, "answer1"],
+      ["$equal", 0, "answer2"],
+      ["$before", -0.5, "answer1"],
+    ];
+    const params = {
+      pollEventId: "$poll",
+      roomId: "!room:example.org",
+      sender: "@alice:example.org",
+      senderName: "Alice",
+      content: buildPollStartContent({ question: "Lunch?", options: ["Pizza", "Sushi"] }),
+      relationEvents: [
+        ...endTimes.map((origin_server_ts, index) => ({
+          event_id: "$end" + index,
+          sender: "@alice:example.org",
+          type: "m.poll.end",
+          origin_server_ts,
+        })),
+        ...votes.map(([event_id, origin_server_ts, answer]) => ({
+          event_id,
+          sender: "@bob:example.org",
+          type: "m.poll.response",
+          origin_server_ts,
+          content: buildPollResponseContent("$poll", [answer]),
+        })),
+      ],
+    };
+    const before = structuredClone(params);
+
+    expect(buildPollResultsSummary(params)).toEqual({
+      eventId: "$poll",
+      roomId: "!room:example.org",
+      sender: "@alice:example.org",
+      senderName: "Alice",
+      question: "Lunch?",
+      answers: ["Pizza", "Sushi"],
+      kind: "m.poll.disclosed",
+      maxSelections: 1,
+      entries: [
+        { id: "answer1", text: "Pizza", votes: 0 },
+        { id: "answer2", text: "Sushi", votes: 1 },
+      ],
+      totalVotes: 1,
+      closed,
+    });
+    expect(params).toStrictEqual(before);
+  });
+
   it("formats disclosed poll results with vote totals", () => {
     const text = formatPollResultsAsText({
       eventId: "$poll",
