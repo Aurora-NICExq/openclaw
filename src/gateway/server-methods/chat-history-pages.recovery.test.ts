@@ -9,7 +9,7 @@ import * as nestedActivity from "../../sessions/nested-tool-activity.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import * as historySanitize from "../chat-display-projection.sanitize.js";
 import { readChatHistoryMessageId } from "../session-history-tail.js";
-import * as anchorReader from "../session-transcript-anchor-reader.js";
+import * as anchorReader from "../session-transcript-readers.js";
 import { readSessionMessagesAsync } from "../session-transcript-readers.js";
 import { readChatHistoryPageLocal } from "./chat-history-pages.js";
 
