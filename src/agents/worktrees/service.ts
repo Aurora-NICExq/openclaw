@@ -36,7 +36,12 @@ import {
   resolveEmptyWorktreeSourceRoot,
 } from "./empty-source.js";
 import { WorktreeRepositoryError } from "./errors.js";
-import { lockState, lockWorktreeForProcess, unlockWorktree } from "./git-lock.js";
+import {
+  createWorktreeLockPrefilter,
+  lockState,
+  lockWorktreeForProcess,
+  unlockWorktree,
+} from "./git-lock.js";
 import {
   commandError,
   listGitWorktrees,
@@ -75,7 +80,7 @@ import {
   finalizeWorktreeRemoval,
   hasLiveWorktreeRunLease,
 } from "./run-lease.js";
-import { listTemplates } from "./template-registry.js";
+import { hasTemplates } from "./template-registry.js";
 import type {
   CreateManagedWorktreeParams,
   ManagedWorktreeBranchesResult,
@@ -1426,6 +1431,7 @@ export class ManagedWorktreeService {
 
   async gc(params: ManagedWorktreeGcParams = {}): Promise<ManagedWorktreeGcResult> {
     const now = this.now();
+    const isLocked = createWorktreeLockPrefilter();
     const progress = new WorktreeGcProgress();
     const result = progress.result;
     const limits = params.limits ?? resolveWorktreeCleanupLimits();
@@ -1458,7 +1464,7 @@ export class ManagedWorktreeService {
           expiresWhenIdle &&
           (retiredOwner || now - record.lastActiveAt > IDLE_GC_MS)
         ) {
-          if (await this.isProtectedFromAutoRemoval(record, params.shouldProtectOwner)) {
+          if (await this.isProtectedFromAutoRemoval(record, isLocked, params.shouldProtectOwner)) {
             progress.protect(record.id);
             continue;
           }
@@ -1477,7 +1483,7 @@ export class ManagedWorktreeService {
     try {
       // Empty caches must not wait behind checkout creation. Collection rereads
       // the templates under the lease before retiring any artifacts.
-      if (listTemplates(this.env).length > 0) {
+      if (hasTemplates(this.env)) {
         await this.withAllocationLease({}, async (guard) => {
           await collectWorktreeTemplates(
             this.env,
@@ -1495,7 +1501,7 @@ export class ManagedWorktreeService {
       log.warn(`worktree template cleanup incomplete: ${String(error)}`);
     }
     try {
-      await this.enforceCleanupLimits(params, progress);
+      await this.enforceCleanupLimits(params, isLocked, progress);
     } catch (error) {
       result.limitsSatisfied = null;
       progress.recordError("limits", error);
@@ -1575,12 +1581,9 @@ export class ManagedWorktreeService {
     return result;
   }
 
-  /**
-   * Shared auto-removal guard: owners, leases, nested repositories, and live or
-   * foreign Git locks veto removal; a dead lock is cleared.
-   */
   private async isProtectedFromAutoRemoval(
     record: ManagedWorktreeRecord,
+    isLocked: ReturnType<typeof createWorktreeLockPrefilter>,
     shouldProtectOwner?: (ownerKind: ManagedWorktreeOwnerKind, ownerId: string) => boolean,
   ): Promise<boolean> {
     if (
@@ -1603,12 +1606,8 @@ export class ManagedWorktreeService {
     if (provisioned.retainedReason !== undefined) {
       return true;
     }
-    const state = await lockState(record);
-    if (state.kind === "live" || state.kind === "foreign") {
+    if (await isLocked(record)) {
       return true;
-    }
-    if (state.kind === "dead") {
-      await requireGit(record.repoRoot, ["worktree", "unlock", record.path]);
     }
     const nested = await runGitWorkerOperation({
       type: "worktree.cleanup-inspection",
@@ -1627,6 +1626,7 @@ export class ManagedWorktreeService {
    */
   private async enforceCleanupLimits(
     params: ManagedWorktreeGcParams,
+    isLocked: ReturnType<typeof createWorktreeLockPrefilter>,
     progress: WorktreeGcProgress,
   ): Promise<void> {
     const limits = params.limits ?? resolveWorktreeCleanupLimits();
@@ -1714,7 +1714,7 @@ export class ManagedWorktreeService {
         continue;
       }
       try {
-        if (await this.isProtectedFromAutoRemoval(record, params.shouldProtectOwner)) {
+        if (await this.isProtectedFromAutoRemoval(record, isLocked, params.shouldProtectOwner)) {
           progress.protect(record.id);
           continue;
         }
