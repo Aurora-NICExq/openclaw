@@ -8,8 +8,9 @@ export function formatWorktreeGcResult(result: ManagedWorktreeGcResult): string 
   const limits =
     result.limitsSatisfied === null ? "unknown" : result.limitsSatisfied ? "satisfied" : "exceeded";
   return (
-    `Cleanup ${result.outcome}: removed ${result.removed.length}; deleted ${result.orphansDeleted} orphans; ` +
-    `pruned ${result.snapshotsPruned} snapshots; protected ${result.protectedCount}; limits ${limits}.` +
+    `Cleanup ${result.outcome}: worktrees removed: ${result.removed.length}; ` +
+    `orphans deleted: ${result.orphansDeleted}; snapshots pruned: ${result.snapshotsPruned}; ` +
+    `protected ${result.protectedCount}; limits ${limits}.` +
     (issues ? ` ${issues}.` : "")
   );
 }

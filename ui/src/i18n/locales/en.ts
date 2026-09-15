@@ -954,9 +954,9 @@ export const en: TranslationMap & {
       partial: "Cleanup incomplete. Check the Gateway logs before retrying.",
     },
     gcSummary:
-      "Removed {removed} worktrees; deleted {orphans} orphans; pruned {snapshots} snapshots.",
+      "Worktrees removed: {removed}; orphans deleted: {orphans}; snapshots pruned: {snapshots}.",
     gcReportSummary:
-      "Retained {protected} protected worktrees. Failed operations: {failed}; deferred operations: {deferred}.",
+      "Protected worktrees retained: {protected}. Failed operations: {failed}; deferred operations: {deferred}.",
     gcLimitsUnknown: "Cleanup limit status is unknown because inventory was incomplete.",
     gcLimitsSatisfied: "Cleanup limits are satisfied.",
     gcLimitsExceeded: "Cleanup limits remain exceeded.",

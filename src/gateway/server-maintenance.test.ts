@@ -483,7 +483,9 @@ describe("startGatewayMaintenanceTimers", () => {
         await vi.advanceTimersByTimeAsync(0);
         expect(runWorktreeGc).toHaveBeenCalledTimes(1);
         const log = outcome === "partial" ? deps.logHealth.error : deps.logHealth.info;
-        expect(log).toHaveBeenCalledWith(expect.stringContaining(`Cleanup ${outcome}: removed 1;`));
+        expect(log).toHaveBeenCalledWith(
+          expect.stringContaining(`Cleanup ${outcome}: worktrees removed: 1;`),
+        );
         expect(log).toHaveBeenCalledWith(expect.stringContaining("protected 5; limits exceeded"));
         await vi.advanceTimersByTimeAsync(60 * 60_000 - 1);
         expect(runWorktreeGc).toHaveBeenCalledTimes(1);

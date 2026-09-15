@@ -744,9 +744,9 @@ describe("WorktreesPage lifecycle", () => {
 
       const text = page.querySelector(`[role="${role}"]`)?.textContent;
       expect(text).toContain(message);
-      expect(text).toContain("Removed 1 worktrees; deleted 2 orphans; pruned 3 snapshots.");
+      expect(text).toContain("Worktrees removed: 1; orphans deleted: 2; snapshots pruned: 3.");
       if (report) {
-        expect(text).toContain("Retained 4 protected worktrees.");
+        expect(text).toContain("Protected worktrees retained: 4.");
         expect(text).toContain(
           outcome === "partial" ? "Failed operations: 2" : "Failed operations: 0",
         );
@@ -754,7 +754,7 @@ describe("WorktreesPage lifecycle", () => {
           outcome === "partial" ? "status is unknown" : "limits remain exceeded",
         );
       } else {
-        expect(text).not.toContain("protected worktrees");
+        expect(text).not.toContain("Protected worktrees retained:");
         expect(text).not.toContain("limits");
       }
       expect(request.mock.calls.filter(([method]) => method === "worktrees.gc")).toHaveLength(1);

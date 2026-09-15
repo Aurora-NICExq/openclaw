@@ -746,12 +746,12 @@ describe("ManagedWorktreeService garbage collection", () => {
 
   it("reports failed snapshot pruning while preserving confirmed removals", async () => {
     const expired = await materializeDownstreamFixture("failed-snapshot");
-    await service.remove({ id: expired.id, reason: "retention" });
+    const { snapshotRef } = await service.remove({ id: expired.id, reason: "retention" });
     const idle = await materializeRunOwnedFixture("removed-before-prune", "session");
     now += SNAPSHOT_RETENTION_MS + 1;
     const run = worktreeGit.requireGit;
     vi.spyOn(worktreeGit, "requireGit").mockImplementation(async (cwd, args, options) => {
-      if (args[0] === "update-ref" && args[1] === "-d") {
+      if (args[0] === "update-ref" && args[1] === "-d" && args[2] === snapshotRef) {
         throw new Error("snapshot ref deletion failed");
       }
       return await run(cwd, args, options);

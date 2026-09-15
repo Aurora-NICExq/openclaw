@@ -169,7 +169,7 @@ describe("worktrees cli", () => {
       json
         ? [1]
         : [
-            "Cleanup partial: removed 1; deleted 2 orphans; pruned 3 snapshots; protected 0; limits unknown. idle failed=4.",
+            "Cleanup partial: worktrees removed: 1; orphans deleted: 2; snapshots pruned: 3; protected 0; limits unknown. idle failed=4.",
             1,
           ],
     );
