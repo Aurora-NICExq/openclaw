@@ -359,6 +359,7 @@ exec ${shellQuote(realGit)} "$@"
     prelude +
       `
 event({ kind: 'gh', args });
+const repo = { id: 'fixture-repo', databaseId: 123, nameWithOwner: 'fixture/repo', url: 'https://github.com/fixture/repo' };
 let value;
 if (args[0] === 'auth') process.exit(1);
 if (args[0] === 'pr' && args[1] === 'view') {
@@ -393,7 +394,7 @@ if (args[0] === 'pr' && args[1] === 'view') {
     state: control.requiredChecks === 'pending' ? 'IN_PROGRESS' : 'FAILURE',
   });
 } else if (args[0] === 'repo' && args[1] === 'view') {
-  value = { id: 'fixture-repo', nameWithOwner: 'fixture/repo', url: 'https://github.com/fixture/repo' };
+  value = { nameWithOwner: repo.nameWithOwner, url: repo.url };
 } else if (args[0] === 'run' && args[1] === 'view') {
   if (control.moveAtCi) {
     runGit(['-C', origin, 'update-ref', 'refs/heads/main', movedMain]);
@@ -425,13 +426,18 @@ if (args[0] === 'pr' && args[1] === 'view') {
       } } } };
     } else if (args.some(arg => arg.includes('ref(qualifiedName:'))) {
       value = { data: { repository: {
-        id: 'fixture-repo', nameWithOwner: 'fixture/repo', url: 'https://github.com/fixture/repo',
+        ...repo,
         ref: { target: { oid: runGit(['-C', origin, 'rev-parse', 'refs/heads/main']) } },
         pullRequest: control.metadata,
       } } };
     } else {
       throw new Error('Unexpected GraphQL request');
     }
+  } else if (endpoint === 'repos/fixture/repo') {
+    if (JSON.stringify(args) !== JSON.stringify(['api', '--hostname', 'github.com', endpoint, '-H', 'Cache-Control: max-age=0'])) {
+      throw new Error('Unexpected authoritative repository request');
+    }
+    value = { id: repo.databaseId, node_id: repo.id, full_name: repo.nameWithOwner, html_url: repo.url };
   } else if (endpoint === 'repos/fixture/repo/commits/${head}') {
     const [name, email] = runGit(['-C', origin, 'show', '-s', '--format=%an%n%ae', ${JSON.stringify(head)}]).split('\\n');
     value = { commit: { author: { name, email } }, author: { ...control.metadata.author, type: 'User' } };
