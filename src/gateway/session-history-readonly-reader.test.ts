@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import {
+  readLatestSessionTranscriptMessageEvent,
   replaceSessionEntry,
   replaceTranscriptEvents,
   waitForSessionTranscriptProjection,
@@ -21,13 +22,15 @@ async function withHistory(
     target: PreparedSessionHistoryReadTarget;
     database: ReturnType<typeof openOpenClawAgentDatabase>;
   }) => Promise<void>,
+  options: { sharedStore?: boolean } = {},
 ) {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const databasePath = options.sharedStore ? state.statePath("shared-history.sqlite") : undefined;
     const scope = {
       agentId: "main",
       sessionId: "requested-history",
       sessionKey: "agent:main:readonly-history",
-      storePath: `${state.sessionsDir()}/sessions.json`,
+      storePath: databasePath ?? `${state.sessionsDir()}/sessions.json`,
     };
     await replaceSessionEntry(scope, { sessionId: scope.sessionId, updatedAt: 1 });
     await replaceTranscriptEvents(scope, [
@@ -40,7 +43,11 @@ async function withHistory(
       },
     ]);
     await waitForSessionTranscriptProjection(scope);
-    const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+    const database = openOpenClawAgentDatabase({
+      agentId: "main",
+      env: state.env,
+      ...(databasePath ? { path: databasePath } : {}),
+    });
     await read({
       database,
       target: {
@@ -208,36 +215,39 @@ it("admits history without creating a missing additive participant table", async
 });
 
 it("keeps logical transcript identity separate from the physical schema owner", async () => {
-  await withHistory(async ({ target, database }) => {
-    const scope = {
-      agentId: "other",
-      sessionKey: "agent:other:shared-history",
-      sessionId: "shared-history",
-      storePath: database.path,
-    };
-    await replaceSessionEntry(scope, { sessionId: scope.sessionId, updatedAt: 1 });
-    await replaceTranscriptEvents(scope, [
-      { type: "session", version: 3, id: scope.sessionId },
-      {
-        type: "message",
-        id: "shared-message",
-        parentId: null,
-        message: { role: "user", content: "Shared physical store" },
-      },
-    ]);
-    await waitForSessionTranscriptProjection(scope);
-    const reader = createReadonlySessionHistoryReader({
-      ...target,
-      transcript: { ...scope, sessionFile: scope.sessionKey },
-      entryValidationKey: scope.sessionKey,
-    });
-    const page = await reader.readRecentSessionMessagesWithStatsAsync(scope, { maxMessages: 10 });
-    expect(page.messages.map(readChatHistoryMessageId)).toEqual(["shared-message"]);
-    expect(database.agentId).toBe("main");
-  });
+  await withHistory(
+    async ({ target, database }) => {
+      const scope = {
+        agentId: "other",
+        sessionKey: "agent:other:shared-history",
+        sessionId: "shared-history",
+        storePath: database.path,
+      };
+      await replaceSessionEntry(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+      await replaceTranscriptEvents(scope, [
+        { type: "session", version: 3, id: scope.sessionId },
+        {
+          type: "message",
+          id: "shared-message",
+          parentId: null,
+          message: { role: "user", content: "Shared physical store" },
+        },
+      ]);
+      await waitForSessionTranscriptProjection(scope);
+      const reader = createReadonlySessionHistoryReader({
+        ...target,
+        transcript: { ...scope, sessionFile: scope.sessionKey },
+        entryValidationKey: scope.sessionKey,
+      });
+      const page = await reader.readRecentSessionMessagesWithStatsAsync(scope, { maxMessages: 10 });
+      expect(page.messages.map(readChatHistoryMessageId)).toEqual(["shared-message"]);
+      expect(database.agentId).toBe("main");
+    },
+    { sharedStore: true },
+  );
 });
 
-it("keeps transcript admission separate from stored-entry validation", async () => {
+it("keeps display history separate from the current-turn context cutoff", async () => {
   await withHistory(async ({ target }) => {
     const anchor = readActiveTranscriptEntryAnchor({
       ...target.transcript,
@@ -247,10 +257,18 @@ it("keeps transcript admission separate from stored-entry validation", async () 
     if (!anchor) throw new Error("expected requested message anchor");
     const reader = createReadonlySessionHistoryReader(target);
     const admission = { ...anchor, logicalTurnId: "read-fence", role: "user" as const };
-    const page = await runWithSessionTranscriptReadFence(admission, () =>
-      reader.readRecentSessionMessagesWithStatsAsync(target.transcript, { maxMessages: 10 }),
-    );
-    expect(page.messages).toEqual([]);
+    const page = await runWithSessionTranscriptReadFence(admission, () => {
+      // Context excludes the admitted turn; display history retains it and validates its identity.
+      expect(
+        readLatestSessionTranscriptMessageEvent({
+          ...target.transcript,
+          storePath: target.database.path,
+        }),
+      ).toBeUndefined();
+      return reader.readRecentSessionMessagesWithStatsAsync(target.transcript, { maxMessages: 10 });
+    });
+    expect(page.messages.map(readChatHistoryMessageId)).toEqual(["requested-message"]);
+    expect(page.totalMessages).toBe(1);
     await expect(
       runWithSessionTranscriptReadFence(
         { ...admission, storePath: `${target.database.path}.other` },
