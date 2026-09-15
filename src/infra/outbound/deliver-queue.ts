@@ -10,6 +10,7 @@ import {
 } from "../delivery-queue-sqlite.js";
 import { formatErrorMessage } from "../errors.js";
 import { runWithQuestionChannelDeliveries } from "../question-channel-runtime.js";
+import { throwIfAborted } from "./abort.js";
 import { prepareDeferredDeliveryAdmission } from "./deferred-delivery-admission.js";
 import { resolveOutboundDurableFinalDeliverySupport } from "./deliver-channel.js";
 import type {
@@ -229,6 +230,33 @@ async function runOutboundDeliveryWithQueue(
       startedAt: auditStartedAt,
     });
   };
+  const emitPreparationFailure = (error: unknown): void => {
+    emitPreQueueFailure();
+    // Preparation aborts the whole batch, so hooks get one failure per
+    // logical payload — matching the per-payload audit terminals above and
+    // the recovery sibling's queuedTerminalFailureEvents.
+    if (params.payloads.length > 0) {
+      const { emitMessageSent } = createMessageSentEmitter({
+        hookRunner: getGlobalHookRunner(),
+        channel,
+        to,
+        accountId: params.accountId,
+        sessionKeyForInternalHooks: params.mirror?.sessionKey ?? params.session?.key,
+        isGroup: params.mirror?.isGroup,
+        groupId: params.mirror?.groupId,
+        runId: params.replyPayloadSendingHook?.runId,
+        logPrefix: OUTBOUND_DELIVERY_LOG_SCOPE,
+      });
+      for (const payload of params.payloads) {
+        const summary = buildPayloadSummary(payload);
+        emitMessageSent({
+          success: false,
+          content: summary.hookContent ?? summary.text,
+          error: formatErrorMessage(error),
+        });
+      }
+    }
+  };
   if (params.requireUnknownSendReconciliation === true && payloads.length !== 1) {
     emitPreQueueFailure();
     throw new Error(
@@ -247,9 +275,14 @@ async function runOutboundDeliveryWithQueue(
       {
         agentId: params.session?.agentId,
         assertCurrent: () => {
-          params.abortSignal?.throwIfAborted();
-          params.deliveryQueueOwner?.signal?.throwIfAborted();
-          params.deliveryQueueStateContext?.workerContext.admission.assertCurrent();
+          try {
+            throwIfAborted(params.abortSignal);
+            params.deliveryQueueOwner?.signal?.throwIfAborted();
+            params.deliveryQueueStateContext?.workerContext.admission.assertCurrent();
+          } catch (error) {
+            emitPreparationFailure(error);
+            throw error;
+          }
         },
       },
     );
@@ -303,31 +336,7 @@ async function runOutboundDeliveryWithQueue(
       }));
     await stablePreparationOwner?.markPrepared();
   } catch (error) {
-    emitPreQueueFailure();
-    // Preparation aborts the whole batch, so hooks get one failure per
-    // logical payload — matching the per-payload audit terminals above and
-    // the recovery sibling's queuedTerminalFailureEvents.
-    if (params.payloads.length > 0) {
-      const { emitMessageSent } = createMessageSentEmitter({
-        hookRunner: getGlobalHookRunner(),
-        channel,
-        to,
-        accountId: params.accountId,
-        sessionKeyForInternalHooks: params.mirror?.sessionKey ?? params.session?.key,
-        isGroup: params.mirror?.isGroup,
-        groupId: params.mirror?.groupId,
-        runId: params.replyPayloadSendingHook?.runId,
-        logPrefix: OUTBOUND_DELIVERY_LOG_SCOPE,
-      });
-      for (const payload of params.payloads) {
-        const summary = buildPayloadSummary(payload);
-        emitMessageSent({
-          success: false,
-          content: summary.hookContent ?? summary.text,
-          error: formatErrorMessage(error),
-        });
-      }
-    }
+    emitPreparationFailure(error);
     throw error;
   }
   const preparedPayloads = acceptedPreparedOutboundEntries(preparedBatch).map(
