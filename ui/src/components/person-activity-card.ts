@@ -4,6 +4,7 @@ import { ref } from "lit/directives/ref.js";
 import { repeat } from "lit/directives/repeat.js";
 import type { GatewaySessionRow } from "../api/types.ts";
 import { i18n, t } from "../i18n/index.ts";
+import { gatewayClientKind } from "../lib/gateway-client-kind.ts";
 import {
   restartHoverMarqueeIfActive,
   startHoverMarqueeFromEvent,
@@ -128,14 +129,8 @@ function connections(user: PresenceViewer): string[] {
           const family = entry.deviceFamily?.trim();
           const platform = describePlatform(entry.platform ?? "", family);
           const familyPlatform = family === "Mac" ? "macOS" : family === "iPad" ? "iPadOS" : family;
-          const app =
-            entry.mode === "webchat"
-              ? t("presence.card.web")
-              : entry.mode === "cli"
-                ? t("presence.card.cli")
-                : entry.mode === "ui"
-                  ? t("presence.card.app")
-                  : undefined;
+          const kind = gatewayClientKind({ id: entry.clientId, mode: entry.mode });
+          const app = kind ? t(`presence.card.${kind}`) : undefined;
           return [
             ...new Set(
               [

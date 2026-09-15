@@ -51,6 +51,7 @@ import {
   parseAgentSessionKey,
 } from "../../routing/session-key.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
+import { captureAsyncWorkTracker } from "../../shared/async-work-scope.js";
 import { resolveSkillsPrompt } from "../../skills/loading/workspace-skill-prompt.js";
 import { resolveEmbeddedRunSkillEntries } from "../../skills/runtime/embedded-run-entries.js";
 import { resolveReusableWorkspaceSkillSnapshot } from "../../skills/runtime/session-snapshot.js";
@@ -116,7 +117,6 @@ import {
 } from "../embedded-agent-runner/run/runtime-context-prompt.js";
 import {
   mapSandboxSkillEntriesForPrompt,
-  mapSandboxSkillUsagePaths,
   remapSkillReferencePaths,
   resolveSandboxSkillRuntimeInputs,
 } from "../embedded-agent-runner/sandbox-skills.js";
@@ -156,7 +156,11 @@ import {
   type BundledCliBackendAuthPolicy,
 } from "./cli-backend-auth-policy.js";
 import { getCliLiveSessionGeneration } from "./cli-live-session-registry.js";
-import { createCliRunCurrentAssertion, resolveCliExecutionTarget } from "./execution-target.js";
+import {
+  createCliRunCurrentAssertion,
+  resolveCliExecutionTarget,
+  retainCliPluginExecutionConsumer,
+} from "./execution-target.js";
 import { buildCliAgentSystemPrompt, isClaudeCliBackendId, normalizeCliModel } from "./helpers.js";
 import { prepareCliHistoryBoundary } from "./history-boundary.js";
 import { cliBackendLog } from "./log.js";
@@ -288,6 +292,7 @@ function prependCliSessionDriftUserContext(
 }
 
 async function resolveCliSkillsPrompt(params: {
+  assertCurrent: () => void;
   agentId: string;
   config: RunCliAgentParams["config"];
   sessionKey: string;
@@ -295,15 +300,20 @@ async function resolveCliSkillsPrompt(params: {
   workspaceDir: string;
   executionWorkspaceDir: string;
 }): Promise<{ prompt: string; usagePaths?: SkillUsagePath[] }> {
+  params.assertCurrent();
   const skillsSnapshot =
     params.skillsSnapshot ??
-    resolveReusableWorkspaceSkillSnapshot({
-      workspaceDir: params.workspaceDir,
-      executionWorkspaceDir: params.executionWorkspaceDir,
-      config: params.config ?? {},
-      agentId: params.agentId,
-      watch: false,
-    }).snapshot;
+    (
+      await resolveReusableWorkspaceSkillSnapshot({
+        assertCurrent: params.assertCurrent,
+        workspaceDir: params.workspaceDir,
+        executionWorkspaceDir: params.executionWorkspaceDir,
+        config: params.config ?? {},
+        agentId: params.agentId,
+        watch: false,
+      })
+    ).snapshot;
+  params.assertCurrent();
   const sandboxWorkspace = await ensureSandboxWorkspaceForSession({
     skillsSnapshot,
     config: params.config,
@@ -311,9 +321,11 @@ async function resolveCliSkillsPrompt(params: {
     sessionKey: params.sessionKey,
     workspaceDir: params.workspaceDir,
   });
+  params.assertCurrent();
   if (!sandboxWorkspace) {
     const { shouldLoadSkillEntries, skillEntries, loadSkillEntries, preserveEntryOrder } =
-      resolveEmbeddedRunSkillEntries({
+      await resolveEmbeddedRunSkillEntries({
+        assertCurrent: params.assertCurrent,
         workspaceDir: params.workspaceDir,
         executionWorkspaceDir: params.executionWorkspaceDir,
         config: params.config,
@@ -321,7 +333,8 @@ async function resolveCliSkillsPrompt(params: {
         skillsSnapshot,
       });
     return {
-      prompt: resolveSkillsPrompt({
+      prompt: await resolveSkillsPrompt({
+        assertCurrent: params.assertCurrent,
         skillsSnapshot,
         entries: shouldLoadSkillEntries ? skillEntries : undefined,
         loadEntries: loadSkillEntries,
@@ -335,6 +348,7 @@ async function resolveCliSkillsPrompt(params: {
 
   const {
     skillsEligibility,
+    skillUsagePaths,
     skillsPromptWorkspaceDir,
     skillsSnapshot: skillsSnapshotForRun,
     skillsWorkspaceDir,
@@ -362,7 +376,8 @@ async function resolveCliSkillsPrompt(params: {
     skillsSnapshot,
   });
   const { shouldLoadSkillEntries, skillEntries, preserveEntryOrder } =
-    resolveEmbeddedRunSkillEntries({
+    await resolveEmbeddedRunSkillEntries({
+      assertCurrent: params.assertCurrent,
       workspaceDir: skillsWorkspaceDir,
       config: params.config,
       agentId: params.agentId,
@@ -376,12 +391,9 @@ async function resolveCliSkillsPrompt(params: {
     skillsPromptWorkspaceDir,
   });
   return {
-    usagePaths: mapSandboxSkillUsagePaths({
-      paths: sandboxWorkspace.skillUsagePaths,
-      skillsWorkspaceDir,
-      skillsPromptWorkspaceDir,
-    }),
-    prompt: resolveSkillsPrompt({
+    usagePaths: skillUsagePaths,
+    prompt: await resolveSkillsPrompt({
+      assertCurrent: params.assertCurrent,
       skillsSnapshot: skillsSnapshotForRun,
       entries: promptSkillEntries,
       workspaceDir: skillsPromptWorkspaceDir,
@@ -1457,6 +1469,8 @@ async function prepareCliRunContextWithinReadFence(
             context: mcpGrantContext,
             runtimeOwnerToken: mcpLoopbackRuntime.ownerToken,
             admittedRunContext: params.admittedRunContext,
+            abortSignal: params.abortSignal,
+            assertCurrent: params.assertCurrent,
             // MCP owns a canonical main target even when the native callback is sessionless.
             bindQuestionAnswerAuthority: (assertActive) =>
               bindQuestionAnswerAuthorityForSession(mcpGrantContext.sessionKey, assertActive),
@@ -1507,11 +1521,12 @@ async function prepareCliRunContextWithinReadFence(
               revokeProcessToken: () => {
                 prepareDeps.revokeMcpLoopbackClientGrant(activeToken);
               },
-              activate: (captureKey: string) => {
+              activate: (captureKey: string, assertCurrent: () => void) => {
                 const activated = prepareDeps.activateMcpLoopbackClientGrantCapture({
                   token: activeToken,
                   runtimeOwnerToken: mcpLoopbackRuntime.ownerToken,
                   captureKey,
+                  assertCurrent,
                 });
                 if (!activated) {
                   throw new Error(
@@ -1736,13 +1751,21 @@ async function prepareCliRunContextWithinReadFence(
       }
       throw error;
     }
+    const pluginExecutionConsumer = retainCliPluginExecutionConsumer(preparedExecution?.execute);
     const preparedBackendCleanup =
-      cleanupPreparedBackend || preparedExecution?.cleanup
+      cleanupPreparedBackend || preparedExecution?.cleanup || pluginExecutionConsumer
         ? async () => {
             try {
-              await preparedExecution?.cleanup?.();
+              const cleanupExecution = () => preparedExecution?.cleanup?.();
+              await (pluginExecutionConsumer
+                ? pluginExecutionConsumer.run(cleanupExecution)
+                : cleanupExecution());
             } finally {
-              await cleanupPreparedBackend?.();
+              try {
+                await cleanupPreparedBackend?.();
+              } finally {
+                pluginExecutionConsumer?.release();
+              }
             }
           }
         : undefined;
@@ -1965,11 +1988,23 @@ async function prepareCliRunContextWithinReadFence(
           cwd,
           moduleUrl: import.meta.url,
         });
+    const skillPreparationParams = params;
+    const assertSkillsCurrent = skillPreparationParams.admittedRunContext
+      ? createCliRunCurrentAssertion({
+          ...skillPreparationParams,
+          admittedRunContext: skillPreparationParams.admittedRunContext,
+        })
+      : () => {
+          skillPreparationParams.assertCurrent?.();
+          skillPreparationParams.abortSignal?.throwIfAborted();
+          skillPreparationParams.preparedRunAdmission?.assertSourceCurrent();
+        };
     const preparedSkills = rootedExecution
       ? { prompt: params.skillsSnapshot?.prompt ?? "" }
       : skipsTurnPreparation || nodeClaudePlacement || claudeSkillsPlugin.args.length > 0
         ? { prompt: "" }
         : await resolveCliSkillsPrompt({
+            assertCurrent: assertSkillsCurrent,
             skillsSnapshot: params.skillsSnapshot,
             workspaceDir,
             executionWorkspaceDir: params.sessionEntry?.worktree?.canonicalWorkspaceDir ?? cwd,
@@ -1977,6 +2012,7 @@ async function prepareCliRunContextWithinReadFence(
             agentId: sessionAgentId,
             sessionKey: params.sessionKey?.trim() || params.sessionId,
           });
+    assertSkillsCurrent();
     const systemPromptSkillsPrompt = preparedSkills.prompt;
     const runtimeChannel = skipsTurnPreparation
       ? undefined
@@ -2242,6 +2278,7 @@ async function prepareCliRunContextWithinReadFence(
         backendResolved,
         preparedBackend: preparedBackendFinal,
         executionTarget,
+        ...(pluginExecutionConsumer ? { pluginExecutionConsumer } : {}),
         reusableCliSession,
         hadSessionFile: false,
         contextEngineConfig: runConfig,
@@ -2273,6 +2310,8 @@ async function prepareCliRunContextWithinReadFence(
       capabilities: backendResolved.contextEngineHostCapabilities,
     });
     let resolvedContextEngine;
+    let deferContextEngineDisposalUntil: PreparedCliRunContext["deferContextEngineDisposalUntil"] =
+      params.contextEngineLogicalTurnLease?.deferDisposalUntil;
     if (params.contextEngineLogicalTurnLease) {
       selectContextEngineForTranscriptHost({
         lease: params.contextEngineLogicalTurnLease,
@@ -2289,10 +2328,38 @@ async function prepareCliRunContextWithinReadFence(
       });
       resolvedContextEngine = params.contextEngineLogicalTurnLease.begin().engine;
     } else {
-      resolvedContextEngine = await resolveContextEngine(runConfig, {
+      const trackDisposal = captureAsyncWorkTracker();
+      const ownedEngine = await resolveContextEngine(runConfig, {
         agentDir: contextEngineAgentDir,
         workspaceDir,
       });
+      resolvedContextEngine = ownedEngine;
+      const previousCleanup = cleanupPreparedResources;
+      const disposalHolds = new Set<Promise<void>>();
+      deferContextEngineDisposalUntil = (promise: Promise<void>) => {
+        disposalHolds.add(promise);
+        void promise.finally(() => disposalHolds.delete(promise)).catch(() => {});
+      };
+      cleanupPreparedResources = async () => {
+        try {
+          if (disposalHolds.size > 0) {
+            // Queued maintenance may need this foreground turn to release its lane first.
+            void trackDisposal(async () => {
+              await Promise.allSettled(disposalHolds);
+              await runCliCleanup(params, "cli-context-engine-release", async () => {
+                await ownedEngine.dispose?.();
+              });
+            }).catch((error: unknown) => {
+              cliBackendLog.warn(`CLI context engine cleanup failed: ${String(error)}`);
+            });
+          } else {
+            await ownedEngine.dispose?.();
+          }
+        } finally {
+          await previousCleanup?.();
+        }
+      };
+      preparedBackendFinal.cleanup = cleanupPreparedResources;
     }
     const contextEngine =
       resolvedContextEngine.info.id !== "legacy" ? resolvedContextEngine : undefined;
@@ -2365,6 +2432,7 @@ async function prepareCliRunContextWithinReadFence(
       backendResolved,
       preparedBackend: preparedBackendFinal,
       executionTarget,
+      ...(pluginExecutionConsumer ? { pluginExecutionConsumer } : {}),
       reusableCliSession,
       ...(managedClaudeLiveSessionGeneration
         ? { requiredClaudeLiveSessionGeneration: managedClaudeLiveSessionGeneration }
@@ -2372,6 +2440,7 @@ async function prepareCliRunContextWithinReadFence(
       hadSessionFile,
       contextEngineConfig: runConfig,
       contextEngine,
+      deferContextEngineDisposalUntil,
       contextEngineTurnPrompt,
       ...(promptContext ? { promptContext, promptForHooks } : {}),
       modelId,

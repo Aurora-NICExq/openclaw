@@ -163,11 +163,13 @@ describe("manual library resources through embedded and host-bound reads", () =>
         librarySelections: pins,
         watch: false,
       };
-      const initial = resolveReusableWorkspaceSkillSnapshot(snapshotInputs).snapshot;
-      const snapshot = resolveReusableWorkspaceSkillSnapshot({
-        ...snapshotInputs,
-        existingSnapshot: reuse === "warm" ? initial : { ...initial, resolvedSkills: undefined },
-      }).snapshot;
+      const initial = (await resolveReusableWorkspaceSkillSnapshot(snapshotInputs)).snapshot;
+      const snapshot = (
+        await resolveReusableWorkspaceSkillSnapshot({
+          ...snapshotInputs,
+          existingSnapshot: reuse === "warm" ? initial : { ...initial, resolvedSkills: undefined },
+        })
+      ).snapshot;
       expect(snapshot.prompt).toBe(initial.prompt);
       expect(snapshot.skills.map((skill) => skill.name)).toContain(saved.entry.name);
       expect(snapshot.resolvedSkills?.map((skill) => skill.name)).not.toContain(saved.entry.name);
@@ -185,7 +187,7 @@ describe("manual library resources through embedded and host-bound reads", () =>
         "SKILL.md",
       );
       expect(invocation?.command.skillFile).toBe(instructionPath);
-      const prepared = prepareEmbeddedSkills({
+      const prepared = await prepareEmbeddedSkills({
         attempt: { config, skillsSnapshot: snapshot },
         effectiveWorkspace: workspaceDir,
         sandbox: undefined,
@@ -281,12 +283,14 @@ describe("manual library resources through embedded and host-bound reads", () =>
           { skillFilter: ["visible"] },
           { skillOverrides: { [saved.entry.name]: false } },
         ]) {
-          const filtered = resolveReusableWorkspaceSkillSnapshot({
-            ...snapshotInputs,
-            ...overrides,
-          }).snapshot;
+          const filtered = (
+            await resolveReusableWorkspaceSkillSnapshot({
+              ...snapshotInputs,
+              ...overrides,
+            })
+          ).snapshot;
           expect(filtered.skills.map((skill) => skill.name)).not.toContain(saved.entry.name);
-          const filteredPrepared = prepareEmbeddedSkills({
+          const filteredPrepared = await prepareEmbeddedSkills({
             attempt: { config, skillsSnapshot: filtered },
             effectiveWorkspace: workspaceDir,
             sandbox: undefined,
@@ -318,7 +322,7 @@ describe("manual library resources through embedded and host-bound reads", () =>
             filteredPrepared.restoreSkillEnv();
           }
         }
-        const deniedPreparation = prepareEmbeddedSkills({
+        const deniedPreparation = await prepareEmbeddedSkills({
           attempt: { config, skillsSnapshot: snapshot, toolExecutionAllow: ["write"] },
           effectiveWorkspace: workspaceDir,
           sandbox: undefined,
@@ -349,11 +353,13 @@ describe("manual library resources through embedded and host-bound reads", () =>
         expect(child.status).toBe("ok");
         const childEntry = loadSessionEntry({ agentId: "main", sessionKey: childKey });
         expect(childEntry?.skillLibrarySelections).toEqual(pins);
-        const childSnapshot = resolveReusableWorkspaceSkillSnapshot({
-          ...snapshotInputs,
-          librarySelections: childEntry!.skillLibrarySelections,
-        }).snapshot;
-        const childPrepared = prepareEmbeddedSkills({
+        const childSnapshot = (
+          await resolveReusableWorkspaceSkillSnapshot({
+            ...snapshotInputs,
+            librarySelections: childEntry!.skillLibrarySelections,
+          })
+        ).snapshot;
+        const childPrepared = await prepareEmbeddedSkills({
           attempt: { config, skillsSnapshot: childSnapshot },
           effectiveWorkspace: workspaceDir,
           sandbox: undefined,

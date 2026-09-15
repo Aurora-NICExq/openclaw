@@ -163,7 +163,7 @@ suite.define(() => {
     }
   });
 
-  it("keeps composer actions fixed while model metadata loads", async () => {
+  it("shows the default and accepts a draft while model metadata loads", async () => {
     if (captureUiProof) {
       await mkdir(path.join(suite.artifactDir, "new-session-skeleton-gap"), { recursive: true });
     }
@@ -185,11 +185,20 @@ suite.define(() => {
 
     try {
       await page.goto(`${suite.server.baseUrl}new`);
-      const modelSkeleton = page.locator(".chat-controls__model-trigger-skeleton");
-      await expect.poll(() => modelSkeleton.isVisible()).toBe(true);
       const modelTrigger = page.locator(
         '.new-session-page__composer [data-chat-model-select="true"]',
       );
+      await expect.poll(() => modelTrigger.textContent()).toContain("gpt-5.6-luna");
+      expect(await modelTrigger.getAttribute("aria-busy")).toBe("false");
+      expect(await page.locator(".chat-controls__model-trigger-skeleton").count()).toBe(0);
+      await page
+        .locator(".new-session-page__message")
+        .fill("Start without waiting for the catalog");
+      await expect
+        .poll(() =>
+          page.getByRole("button", { name: "Start session" }).getAttribute("aria-disabled"),
+        )
+        .toBe("false");
       const actions = page.locator(".new-session-page__composer .agent-chat__composer-actions");
       const loadingModelBox = await modelTrigger.boundingBox();
       const loadingActionsBox = await actions.boundingBox();
@@ -215,6 +224,10 @@ suite.define(() => {
       expect(readyActionsBox).not.toBeNull();
       expect(readyActionsBox?.x).toBeCloseTo(loadingActionsBox?.x ?? 0, 0);
       expect(readyActionsBox?.width).toBeCloseTo(loadingActionsBox?.width ?? 0, 0);
+      await modelTrigger.click();
+      await page.keyboard.press("Escape");
+      await modelTrigger.click();
+      expect(await gateway.getRequests("models.list")).toHaveLength(1);
     } finally {
       await context.close();
     }
@@ -353,18 +366,13 @@ suite.define(() => {
     const gateway = await installMockGateway(page, {
       methodResponses: {
         "models.list": {
-          sequence: [
-            {
-              __mockError: {
-                code: "UNAVAILABLE",
-                details: { reason: "startup-sidecars" },
-                message: "gateway startup sidecars are still initializing",
-                retryable: true,
-                retryAfterMs: 100,
-              },
-            },
-            { commands: [], models: [recoveredModel] },
-          ],
+          __mockError: {
+            code: "UNAVAILABLE",
+            details: { reason: "startup-sidecars" },
+            message: "gateway startup sidecars are still initializing",
+            retryable: true,
+            retryAfterMs: 100,
+          },
         },
       },
     });
@@ -375,8 +383,10 @@ suite.define(() => {
       await expect
         .poll(() => page.getByText("Models unavailable", { exact: true }).count())
         .toBeGreaterThan(0);
+      expect(await gateway.getRequests("models.list")).toHaveLength(2);
+      await gateway.setMethodResponse("models.list", { commands: [], models: [recoveredModel] });
       await gateway.emitGatewayEvent("chat.metadata.changed", {});
-      await expect.poll(async () => (await gateway.getRequests("models.list")).length).toBe(2);
+      await expect.poll(async () => (await gateway.getRequests("models.list")).length).toBe(3);
 
       const modelSelect = page.locator(
         '.new-session-page__composer [data-chat-model-select="true"]',
@@ -387,7 +397,7 @@ suite.define(() => {
         .poll(() => page.locator('[data-chat-model-option="openai/gpt-5.6-luna"]').textContent())
         .toContain(recoveredModel.name);
 
-      await expect.poll(async () => (await gateway.getRequests("models.list")).length).toBe(3);
+      expect(await gateway.getRequests("models.list")).toHaveLength(3);
       for (const request of await gateway.getRequests("models.list")) {
         expect(request.params).toEqual({ view: "configured", agentId: "main" });
       }
@@ -480,7 +490,7 @@ suite.define(() => {
         ),
       ).toBe("GPT-5.6 Luna");
       expect(await page.getByText("Models unavailable", { exact: true }).count()).toBe(0);
-      await expect.poll(async () => (await gateway.getRequests("models.list")).length).toBe(2);
+      expect(await gateway.getRequests("models.list")).toHaveLength(1);
       if (captureUiProof) {
         await writeFile(
           path.join(suite.artifactDir, "new-session-catalog-retry", "01-cli-agents-retry.png"),
@@ -521,7 +531,7 @@ suite.define(() => {
           catalogDiscoveryRequests(await gateway.getRequests("sessions.catalog.list")),
         )
         .toHaveLength(3);
-      await expect.poll(async () => (await gateway.getRequests("models.list")).length).toBe(2);
+      expect(await gateway.getRequests("models.list")).toHaveLength(1);
       await expect
         .poll(() => page.locator('[data-chat-model-target="anthropic"]').isVisible())
         .toBe(true);

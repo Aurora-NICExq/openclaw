@@ -454,14 +454,16 @@ describe("Gateway pinned manual library read", () => {
               const entry = loadSessionEntry({ agentId: "main", sessionKey });
               // Compaction rebuilds tools independently of the ordinary attempt. Exercise that real
               // preparation with the persisted session pin rather than copying a read-root list.
-              const hydrated = resolveReusableWorkspaceSkillSnapshot({
-                workspaceDir: state.workspaceDir,
-                config: cfg,
-                agentId: "main",
-                librarySelections: entry!.skillLibrarySelections,
-                existingSnapshot: entry!.skillsSnapshot,
-                watch: false,
-              }).snapshot;
+              const hydrated = (
+                await resolveReusableWorkspaceSkillSnapshot({
+                  workspaceDir: state.workspaceDir,
+                  config: cfg,
+                  agentId: "main",
+                  librarySelections: entry!.skillLibrarySelections,
+                  existingSnapshot: entry!.skillsSnapshot,
+                  watch: false,
+                })
+              ).snapshot;
               const preparedModelRuntime = await prepareModelRuntimeSnapshot({
                 config: cfg,
                 agentId: "main",

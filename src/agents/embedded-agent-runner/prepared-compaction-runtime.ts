@@ -153,7 +153,8 @@ export async function buildPreparedCompactionRuntime(
   onCleanupReady({ disposeToolRuntimes, restoreSkillEnvironment });
 
   try {
-    const preparedSkills = prepareEmbeddedSkills({
+    const preparedSkills = await prepareEmbeddedSkills({
+      assertCurrent: () => params.abortSignal?.throwIfAborted(),
       attempt: {
         config: params.config,
         bootstrapWorkspaceDir: params.bootstrapWorkspaceDir,
@@ -376,6 +377,7 @@ export async function buildPreparedCompactionRuntime(
       ? await createBundleLspToolRuntime({
           workspaceDir: effectiveWorkspace,
           cfg: params.config,
+          abortSignal: params.abortSignal,
           reservedToolNames: [
             ...tools.map((tool) => tool.name),
             ...(bundleMcpRuntime?.tools.map((tool) => tool.name) ?? []),

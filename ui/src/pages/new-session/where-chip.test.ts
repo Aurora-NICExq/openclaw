@@ -71,7 +71,6 @@ function renderPicker(
       cloudProfileId: selection.cloudProfileId ?? "",
       deviceId: selection.deviceId ?? "",
       autoDevice: selection.autoDevice,
-      worktreeAvailable: true,
       submitting: false,
       pendingPlacement: false,
       popoverOpen: true,
@@ -95,6 +94,18 @@ function renderPicker(
 }
 
 describe("Where chip", () => {
+  it("shows device and cloud skeletons while the catalog loads", () => {
+    const container = renderPicker(
+      true,
+      undefined,
+      { environments: null, cloudProfiles: [] },
+      { catalogLoading: true },
+    );
+    expect(container.querySelectorAll(".new-session-page__environment-skeletons")).toHaveLength(2);
+    expect(container.querySelector('[data-section="devices"]')).not.toBeNull();
+    expect(container.querySelector('[data-section="cloud"]')).not.toBeNull();
+  });
+
   it.each([
     { label: "Work MacBook Pro", platform: "darwin", icon: deviceIcons.laptop, form: "laptop" },
     {
@@ -327,11 +338,13 @@ describe("Where chip", () => {
     ).not.toBeNull();
   });
 
-  it("explains the checkout requirement instead of provider details", () => {
-    const container = renderPicker(true, undefined, {}, { worktreeAvailable: false });
-    expect(hoverDetails(container.querySelector('[data-value="cloud:aws"]'))).toBe(
-      "Cloud needs a Git checkout",
-    );
+  it("offers cloud profiles without requiring a Git source", () => {
+    const onSelectCloudProfile = vi.fn();
+    const container = renderPicker(true, undefined, {}, { onSelectCloudProfile });
+    const cloud = container.querySelector<HTMLButtonElement>('[data-value="cloud:aws"]');
+    expect(cloud?.disabled).toBe(false);
+    cloud?.click();
+    expect(onSelectCloudProfile).toHaveBeenCalledWith("aws", true);
   });
 
   it("places usable devices before disabled devices while preserving each group's order", () => {
@@ -801,8 +814,6 @@ describe("Where chip", () => {
         },
       ],
       cloudProfiles: [],
-      cloudProfileId: "",
-      deviceId: "",
       deviceDisabledReason: "This runtime does not support paired devices",
     });
 
@@ -818,8 +829,6 @@ describe("Where chip", () => {
     const emptyContainer = renderPicker(false, undefined, {
       environments: [],
       cloudProfiles: [],
-      cloudProfileId: "",
-      deviceId: "",
     });
     expect(emptyContainer.querySelector('[data-value="auto-device"]')).toBeNull();
   });
@@ -856,8 +865,6 @@ describe("Where chip", () => {
         },
       ],
       cloudProfiles: [],
-      cloudProfileId: "",
-      deviceId: "",
     });
 
     const automatic = container.querySelector<HTMLButtonElement>('[data-value="auto-device"]');
@@ -948,8 +955,6 @@ describe("Where chip", () => {
           },
         ],
         cloudProfiles: [],
-        cloudProfileId: "",
-        deviceId: "",
         devicePlacement,
       });
 

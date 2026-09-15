@@ -2,15 +2,45 @@
 const currentModuleUrl = import.meta.url;
 
 export const updateExecutorNativeEntrypoints = {
+  commandRepair: {
+    currentModuleUrl,
+    sourceWorkerName: "update-command-repair",
+    distWorkerPath: "cli/update-cli/update-command-repair.js",
+  },
+  commandRun: {
+    currentModuleUrl,
+    sourceWorkerName: "update-command-run",
+    distWorkerPath: "cli/update-cli/update-command-run.js",
+  },
+  retainedRecovery: {
+    currentModuleUrl,
+    sourceWorkerName: "../../infra/update-retained-recovery.test-support",
+    distWorkerPath: "infra/update-retained-recovery.test-support.js",
+  },
   executor: {
     currentModuleUrl,
     sourceWorkerName: "update-command-executor",
     distWorkerPath: "cli/update-cli/update-command-executor.js",
   },
+  migratedFinalize: {
+    currentModuleUrl,
+    sourceWorkerName: "../../infra/update-migrated-finalize.worker",
+    distWorkerPath: "infra/update-migrated-finalize.worker.js",
+  },
+  doctorResult: {
+    currentModuleUrl,
+    sourceWorkerName: "../../infra/update-doctor-result",
+    distWorkerPath: "infra/update-doctor-result.js",
+  },
   processExec: {
     currentModuleUrl,
     sourceWorkerName: "../../process/exec",
     distWorkerPath: "process/exec.js",
+  },
+  handoffLease: {
+    currentModuleUrl,
+    sourceWorkerName: "../../infra/update-managed-service-handoff-lease",
+    distWorkerPath: "infra/update-managed-service-handoff-lease.js",
   },
   nativeExecutor: {
     currentModuleUrl,
@@ -36,5 +66,20 @@ export const updateExecutorNativeEntrypoints = {
     currentModuleUrl,
     sourceWorkerName: "../../config/io.factory",
     distWorkerPath: "config/io.factory.js",
+  },
+  leaseFixture: {
+    currentModuleUrl,
+    sourceWorkerName: "update-command-lease.test-support",
+    distWorkerPath: "cli/update-cli/update-command-lease.test-support.js",
+  },
+  failureOutput: {
+    currentModuleUrl,
+    sourceWorkerName: "../failure-output",
+    distWorkerPath: "cli/failure-output.js",
+  },
+  sealedRegistry: {
+    currentModuleUrl,
+    sourceWorkerName: "../../infra/sealed-runtime-registry",
+    distWorkerPath: "infra/sealed-runtime-registry.js",
   },
 } as const;
