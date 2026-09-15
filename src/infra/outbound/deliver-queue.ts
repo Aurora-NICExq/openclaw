@@ -2,6 +2,7 @@
 import { readAskUserQuestionId } from "../../auto-reply/reply-payload.js";
 import { deriveDurableFinalDeliveryRequirementsForBatch } from "../../channels/message/capabilities.js";
 import { createRenderedMessageBatchPlan } from "../../channels/message/rendered-batch.js";
+import type { ChannelMessageDeferredDeliveryAdmissionResult } from "../../channels/message/types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import {
@@ -264,29 +265,30 @@ async function runOutboundDeliveryWithQueue(
     );
   }
   if (params.deferredDeliveryAdmissionPassed !== true) {
-    const resolveAdmission = await prepareDeferredDeliveryAdmission(
-      {
-        cfg: params.cfg,
-        channel,
-        to,
-        accountId: params.accountId,
-        phase: "live",
-      },
-      {
-        agentId: params.session?.agentId,
-        assertCurrent: () => {
-          try {
+    let admission: ChannelMessageDeferredDeliveryAdmissionResult;
+    try {
+      const resolveAdmission = await prepareDeferredDeliveryAdmission(
+        {
+          cfg: params.cfg,
+          channel,
+          to,
+          accountId: params.accountId,
+          phase: "live",
+        },
+        {
+          agentId: params.session?.agentId,
+          assertCurrent: () => {
             throwIfAborted(params.abortSignal);
             params.deliveryQueueOwner?.signal?.throwIfAborted();
             params.deliveryQueueStateContext?.workerContext.admission.assertCurrent();
-          } catch (error) {
-            emitPreparationFailure(error);
-            throw error;
-          }
+          },
         },
-      },
-    );
-    const admission = resolveAdmission();
+      );
+      admission = resolveAdmission();
+    } catch (error) {
+      emitPreparationFailure(error);
+      throw error;
+    }
     if (admission.status === "permanent_rejection") {
       emitPreQueueFailure();
       throw new Error(admission.reason);
