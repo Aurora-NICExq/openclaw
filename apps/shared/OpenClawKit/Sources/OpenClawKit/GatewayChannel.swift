@@ -1590,7 +1590,6 @@ extension GatewayChannelActor {
     private func wrap(_ error: Error, context: String) -> Error {
         if error is CancellationError ||
             error is GatewayConnectAuthError ||
-            error is GatewayExternalAuthorizationError ||
             error is GatewayResponseError ||
             error is GatewayDecodingError ||
             error is GatewayTLSValidationError
