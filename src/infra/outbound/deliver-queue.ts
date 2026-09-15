@@ -10,7 +10,7 @@ import {
 } from "../delivery-queue-sqlite.js";
 import { formatErrorMessage } from "../errors.js";
 import { runWithQuestionChannelDeliveries } from "../question-channel-runtime.js";
-import { resolveDeferredDeliveryAdmission } from "./deferred-delivery-admission.js";
+import { prepareDeferredDeliveryAdmission } from "./deferred-delivery-admission.js";
 import { resolveOutboundDurableFinalDeliverySupport } from "./deliver-channel.js";
 import type {
   DeliverOutboundPayloadsParams,
@@ -236,7 +236,7 @@ async function runOutboundDeliveryWithQueue(
     );
   }
   if (params.deferredDeliveryAdmissionPassed !== true) {
-    const admission = resolveDeferredDeliveryAdmission(
+    const resolveAdmission = await prepareDeferredDeliveryAdmission(
       {
         cfg: params.cfg,
         channel,
@@ -244,8 +244,16 @@ async function runOutboundDeliveryWithQueue(
         accountId: params.accountId,
         phase: "live",
       },
-      { agentId: params.session?.agentId },
+      {
+        agentId: params.session?.agentId,
+        assertCurrent: () => {
+          params.abortSignal?.throwIfAborted();
+          params.deliveryQueueOwner?.signal?.throwIfAborted();
+          params.deliveryQueueStateContext?.workerContext.admission.assertCurrent();
+        },
+      },
     );
+    const admission = resolveAdmission();
     if (admission.status === "permanent_rejection") {
       emitPreQueueFailure();
       throw new Error(admission.reason);
