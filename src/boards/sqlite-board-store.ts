@@ -4,12 +4,15 @@ import type {
   BoardSnapshot,
   BoardWidgetMaterializedPutParams,
 } from "../../packages/gateway-protocol/src/index.js";
+import { resolveStateDir } from "../config/state-dir.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import {
-  openOpenClawAgentDatabase,
+  resolveOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
+  withOpenClawAgentDatabaseAsync,
   type OpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
+import { runOpenClawAgentWriteAdmission } from "../state/openclaw-agent-write-admission.js";
 import { BoardValidationError } from "./board-layout.js";
 import {
   cloneBoardSnapshot,
@@ -66,17 +69,20 @@ export class SqliteBoardStore implements BoardStore {
     return this.options.resolveSession(target);
   }
 
-  private requireExistingSession(resolved: {
-    agentId: string;
-    path?: string;
-    sessionKey: string;
-  }): void {
+  private requireExistingSession(
+    resolved: {
+      agentId: string;
+      path?: string;
+      sessionKey: string;
+    },
+    env: NodeJS.ProcessEnv,
+  ): void {
     const result = withOpenClawAgentDatabaseReadOnly(
       (database) => hasBoardSession(database, resolved.sessionKey),
       {
         agentId: resolved.agentId,
         ...(resolved.path ? { path: resolved.path } : {}),
-        env: this.options.env,
+        env,
       },
     );
     if (!result.found || !result.value) {
@@ -87,19 +93,58 @@ export class SqliteBoardStore implements BoardStore {
     }
   }
 
-  private prepareWrite(target: BoardSessionTarget): {
-    database: OpenClawAgentDatabase;
-    resolved: { agentId: string; path?: string; sessionKey: string };
-  } {
+  private write<T>(
+    target: BoardSessionTarget,
+    options: BoardWriteOptions | undefined,
+    operationLabel: string,
+    operation: (database: OpenClawAgentDatabase, sessionKey: string) => T,
+  ): Promise<T> {
     const resolved = this.resolve(target);
-    this.requireExistingSession(resolved);
-    const database = openOpenClawAgentDatabase({
-      agentId: resolved.agentId,
-      ...(resolved.path ? { path: resolved.path } : {}),
-      env: this.options.env,
-    });
-    ensureBoardSchema(database);
-    return { database, resolved };
+    const env = { ...(this.options.env ?? process.env) };
+    env.OPENCLAW_STATE_DIR = resolveStateDir(env);
+    const databaseOptions = {
+      ...resolved,
+      env,
+      path: resolveOpenClawAgentSqlitePath({ ...resolved, env }),
+    };
+    const assertCurrent = () => {
+      options?.assertCurrent?.();
+      const current = this.resolve(target);
+      if (
+        current.agentId !== resolved.agentId ||
+        current.path !== resolved.path ||
+        current.sessionKey !== resolved.sessionKey
+      ) {
+        throw new BoardValidationError("invalid_operation", "board session changed; retry");
+      }
+    };
+    const assertOpenCurrent = () => {
+      assertCurrent();
+      this.requireExistingSession({ ...resolved, path: databaseOptions.path }, env);
+    };
+    assertOpenCurrent();
+    return runOpenClawAgentWriteAdmission(
+      databaseOptions,
+      () =>
+        withOpenClawAgentDatabaseAsync(
+          databaseOptions,
+          (database) => {
+            // First-use schema work shares the data write's admission and current authority.
+            assertCurrent();
+            ensureBoardSchema(database);
+            return runOpenClawAgentWriteTransaction(
+              (transactionDatabase) => {
+                assertCurrent();
+                return operation(transactionDatabase, resolved.sessionKey);
+              },
+              databaseOptions,
+              { operationLabel },
+            );
+          },
+          assertOpenCurrent,
+        ),
+      true,
+    );
   }
 
   async getSnapshot(target: BoardSessionTarget): Promise<BoardSnapshot> {
@@ -154,35 +199,20 @@ export class SqliteBoardStore implements BoardStore {
     if (ops.length === 0) {
       return this.getSnapshot(target);
     }
-    options?.assertCurrent?.();
-    const { database, resolved } = this.prepareWrite(target);
-    return runOpenClawAgentWriteTransaction(
-      (transactionDatabase) => {
-        options?.assertCurrent?.();
-        return applyBoardOpsToDatabase(transactionDatabase, resolved.sessionKey, ops);
-      },
-      { agentId: resolved.agentId, path: database.path, env: this.options.env },
-      { operationLabel: "board.apply-ops" },
+    return this.write(target, options, "board.apply-ops", (database, sessionKey) =>
+      applyBoardOpsToDatabase(database, sessionKey, ops),
     );
   }
 
   async putWidget(params: BoardWidgetMaterializedPutParams, options?: BoardWriteOptions) {
-    options?.assertCurrent?.();
-    const { database, resolved } = this.prepareWrite(params);
-    const canonicalInput = normalizeBoardWidgetPutParams(params, resolved.sessionKey);
     const viewGeneration = randomBytes(16).toString("hex");
-    return runOpenClawAgentWriteTransaction(
-      (transactionDatabase) => {
-        options?.assertCurrent?.();
-        return putBoardWidgetInDatabase(
-          transactionDatabase,
-          resolved.sessionKey,
-          canonicalInput,
-          viewGeneration,
-        );
-      },
-      { agentId: resolved.agentId, path: database.path, env: this.options.env },
-      { operationLabel: "board.put-widget" },
+    return this.write(params, options, "board.put-widget", (database, sessionKey) =>
+      putBoardWidgetInDatabase(
+        database,
+        sessionKey,
+        normalizeBoardWidgetPutParams(params, sessionKey),
+        viewGeneration,
+      ),
     );
   }
 
@@ -194,22 +224,8 @@ export class SqliteBoardStore implements BoardStore {
     instanceId?: string,
     options?: BoardWriteOptions,
   ): Promise<BoardSnapshot> {
-    options?.assertCurrent?.();
-    const { database, resolved } = this.prepareWrite(target);
-    return runOpenClawAgentWriteTransaction(
-      (transactionDatabase) => {
-        options?.assertCurrent?.();
-        return grantBoardWidgetInDatabase(
-          transactionDatabase,
-          resolved.sessionKey,
-          name,
-          decision,
-          revision,
-          instanceId,
-        );
-      },
-      { agentId: resolved.agentId, path: database.path, env: this.options.env },
-      { operationLabel: "board.grant-widget" },
+    return this.write(target, options, "board.grant-widget", (database, sessionKey) =>
+      grantBoardWidgetInDatabase(database, sessionKey, name, decision, revision, instanceId),
     );
   }
 

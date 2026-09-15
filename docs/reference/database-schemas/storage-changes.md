@@ -209,8 +209,12 @@ Writes carry the caller's current-authority assertion into the synchronous SQLit
 transaction. HTML widget capability actions and protected publication run in the store's immediate
 continuation after its authoritative read and current ticket, session, and grant checks.
 Database ownership is released before awaiting external work; no Promise handoff separates
-the final authorization from its use. SQLite execution remains synchronous inside the
-store, with existing revision, grant, and transaction semantics.
+the final authorization from its use. Board and progress-card writes capture their physical
+database and state environment before joining the canonical agent writer queue. Cold opens
+use its asynchronous integrity admission, and request authority is checked again before
+schema setup and mutation. A changed route, closed request, or revoked session cannot
+publish a queued write. SQLite kernels remain synchronous inside the store, with existing
+revision, grant, session-existence, and transaction semantics.
 
 MCP App pinning retains its existing source-interaction checks. A delayed adapter must
 revalidate that source authority at its actual write admission; checking view registration
