@@ -13,6 +13,7 @@ import { resolveSessionStorePathCore } from "./paths.js";
 import { listSessionEntriesReadOnly, replaceSessionEntry } from "./session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import {
+  isConfiguredSessionStoreAgentId,
   resolveExistingAgentSessionStoreTargetsSync,
   resolveSessionStoreTargets,
 } from "./targets.js";
@@ -87,6 +88,10 @@ describe("resolveSessionStoreTargets", () => {
           storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId: "opencode", env }),
         },
       ]);
+      for (const agentId of ["ops", "review", "claude", "gemini", "opencode"]) {
+        expect(isConfiguredSessionStoreAgentId(cfg, agentId)).toBe(true);
+      }
+      expect(isConfiguredSessionStoreAgentId(cfg, "unconfigured")).toBe(false);
     });
   });
 
