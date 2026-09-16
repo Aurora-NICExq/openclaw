@@ -1,7 +1,6 @@
 import type { NativeHookRelayStoreWorkerOperations } from "../agents/harness/native-hook-relay-store.worker-contract.js";
 import type { SubagentRunReadRecord } from "../agents/subagents/registry/subagent-registry-read.types.js";
 import type { ClawInstallSchemaVersionRow } from "../claws/provenance-runtime-read.kernel.js";
-import type { readWorkshopMigrationRecordsInDatabase } from "../commands/doctor-skill-workshop-read.kernel.js";
 import type { ConfigHealthPatch } from "../config/io.health-state.kernel.js";
 import type {
   ConfigHealthSnapshot,
@@ -19,6 +18,7 @@ import type { PluginStateWorkerOperations } from "../plugin-state/plugin-state-w
 import type { PluginMetadataStateSelector } from "../plugins/installed-plugin-index-row.js";
 import type { TaskFlowView } from "../plugins/runtime/task-domain-types.js";
 import type { ProjectRegistryIdentity } from "../projects/project-registry.kernel.js";
+import type { SkillProposalEvent, SkillProposalRecord } from "../skills/workshop/types.js";
 import type { ManagedTaskInFlowInput } from "../tasks/task-flow-managed-run-task.kernel.js";
 import type { RunTaskInFlowResult } from "../tasks/task-flow-managed-run-task.types.js";
 import type {
@@ -73,7 +73,12 @@ export type OpenClawStateWorkerOperations = NativeHookRelayStoreWorkerOperations
     };
     "doctor.workshopMigrationRecords.read": {
       input: { includeEvents: boolean };
-      output: ReturnType<typeof readWorkshopMigrationRecordsInDatabase> | undefined;
+      output:
+        | {
+            records: Array<{ record: SkillProposalRecord; ownerAgentId: string | null }>;
+            appliedEvents: SkillProposalEvent[];
+          }
+        | undefined;
     };
     "modelCatalog.remote.read": {
       input: { artifactPreservingReadOnly: boolean };
