@@ -583,6 +583,8 @@ ${readFileSync(gitShim, "utf8")}
       expect(failed.status).not.toBe(0);
       expect(existsSync(f.worktree)).toBe(fetchNumber === 2);
       if (fetchNumber === 2) {
+        expect(f.git(f.worktree, "symbolic-ref", "HEAD")).toBe("refs/heads/temp/pr-42");
+        expect(f.git(f.canonical, "rev-parse", "refs/heads/temp/pr-42")).toBe(f.main);
         expect(f.git(f.worktree, "write-tree")).toBe(
           f.git(f.canonical, "rev-parse", `${f.main}^{tree}`),
         );

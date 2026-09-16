@@ -19,7 +19,33 @@ export function copyPrWrapperSources(destination: string): string[] {
 export function linkPrWrapperDependencies(destination: string): void {
   mkdirSync(join(destination, "node_modules"));
   // Use installed third-party packages only, never workspace source or loader mocks.
-  for (const dependency of ["tsx", "zod", "minimatch", "yaml"]) {
+  for (const dependency of [
+    "@openclaw/fs-safe",
+    "acorn",
+    "chalk",
+    "commander",
+    "dotenv",
+    "execa",
+    "hosted-git-info",
+    "import-meta-resolve",
+    "ipaddr.js",
+    "jiti",
+    "json5",
+    "koffi",
+    "kysely",
+    "minimatch",
+    "ms",
+    "semver",
+    "string-width",
+    "tsdown",
+    "tslog",
+    "tsx",
+    "typebox",
+    "typescript",
+    "yaml",
+    "zod",
+  ]) {
+    mkdirSync(dirname(join(destination, "node_modules", dependency)), { recursive: true });
     symlinkSync(
       realpathSync(join("node_modules", dependency)),
       join(destination, "node_modules", dependency),
