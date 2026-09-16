@@ -32,7 +32,7 @@ import {
 import { projectTranscriptEntryMessage } from "./session-transcript-entry-message.js";
 import type { ResolvedTranscriptReadTarget } from "./session-transcript-read-target.js";
 
-export type { ReadSessionMessagesAsyncOptions, SessionTranscriptReadScope };
+export type { SessionTranscriptReadScope };
 export type SessionTranscriptReadAccess = {
   resolveTarget: (scope: SessionTranscriptReadScope) => Promise<ResolvedTranscriptReadTarget>;
   readSnapshot: <T>(

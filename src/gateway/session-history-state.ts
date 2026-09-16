@@ -46,7 +46,10 @@ export async function readSessionHistorySnapshotAsync(
     params.target.sessionEntry?.incognito ||
     isIncognitoSessionKey(params.target.sessionKey)
   ) {
-    return readSessionHistorySnapshotLocal(params);
+    return readSessionHistorySnapshotKernel(params, {
+      readers: sessionTranscriptReaders,
+      resolveCurrentUserProfileDisplay,
+    });
   }
   const { readSessionHistoryPageInWorker } =
     await import("../config/sessions/session-history-worker-runtime.js");
@@ -70,17 +73,6 @@ export async function readSessionHistorySnapshotAsync(
   const project = createCurrentUserProfileMessageProjector(resolveCurrentUserProfileDisplay);
   const messages = snapshot.history.messages.map(project);
   return { ...snapshot, history: { ...snapshot.history, items: messages, messages } };
-}
-
-export function readSessionHistorySnapshotLocal(
-  params: SessionHistoryReadParams,
-  options: { readOnly?: boolean; deferProfileDisplay?: boolean } = {},
-): Promise<SessionHistorySnapshot> {
-  return readSessionHistorySnapshotKernel(params, {
-    ...options,
-    readers: sessionTranscriptReaders,
-    resolveCurrentUserProfileDisplay,
-  });
 }
 
 /** Tracks session-history SSE state and decides when inline appends are still valid. */

@@ -107,16 +107,12 @@ export async function readChatHistoryPage(
   };
 }
 
-export async function readChatHistoryPageLocal(
-  params: ChatHistoryPageParams,
-  options: { readOnly?: boolean; deferProfileDisplay?: boolean } = {},
-): Promise<ChatHistoryPage> {
+async function readChatHistoryPageLocal(params: ChatHistoryPageParams): Promise<ChatHistoryPage> {
   const { entry, provider, effectiveMaxChars, offset, messageId } = params;
   const cliSessionId = params.ignoreCliSessionImports
     ? undefined
     : getCliSessionBinding(entry, "claude-cli")?.sessionId;
   return readChatHistoryPageKernel(params, {
-    ...options,
     readers: sessionTranscriptReaders,
     resolveCurrentUserProfileDisplay,
     ...(cliSessionId
@@ -145,10 +141,7 @@ export async function readChatHistoryPageLocal(
               preparedImportedMessages: importedMessages,
             });
             if ((offset !== undefined || messageId) && !cliHistory.imported) {
-              return readChatHistoryPageLocal(
-                { ...params, ignoreCliSessionImports: true },
-                options,
-              );
+              return readChatHistoryPageLocal({ ...params, ignoreCliSessionImports: true });
             }
             if (cliHistory.expanded || messageId) {
               // Reuse this request's redacted external snapshot after the full local read;
@@ -158,7 +151,6 @@ export async function readChatHistoryPageLocal(
                   mode: "full",
                   reason: "chat.history CLI import merge",
                   allowResetArchiveFallback: true,
-                  readOnly: options.readOnly,
                 }),
                 typeof entry?.sessionStartedAt === "number" ? entry.sessionStartedAt : undefined,
               );
@@ -169,10 +161,7 @@ export async function readChatHistoryPageLocal(
                 preparedImportedMessages: importedMessages,
               });
               if (!completeCliHistory.imported) {
-                return readChatHistoryPageLocal(
-                  { ...params, ignoreCliSessionImports: true },
-                  options,
-                );
+                return readChatHistoryPageLocal({ ...params, ignoreCliSessionImports: true });
               }
               const mergedMessages = dropPreSessionStartAnnouncePairs(
                 completeCliHistory.messages,
@@ -181,16 +170,16 @@ export async function readChatHistoryPageLocal(
               const displayMessages = projectChatDisplayMessages(mergedMessages, {
                 includeCommentaryFallbacks: true,
                 maxChars: effectiveMaxChars,
-                ...(options.deferProfileDisplay ? {} : { resolveCurrentUserProfileDisplay }),
+                resolveCurrentUserProfileDisplay,
               });
               if (!completeCliHistory.expanded && !messageId) {
                 // A tail-only merge can look expanded because older imported rows are absent
                 // from that local window. Preserve normal local pagination after the full merge
                 // proves that the import only contributes identity metadata.
-                const localPage = await readChatHistoryPageLocal(
-                  { ...params, ignoreCliSessionImports: true },
-                  options,
-                );
+                const localPage = await readChatHistoryPageLocal({
+                  ...params,
+                  ignoreCliSessionImports: true,
+                });
                 return {
                   ...localPage,
                   messages: projectCliIdentityOntoPagedMessages({

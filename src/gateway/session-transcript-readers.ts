@@ -14,11 +14,7 @@ import {
   toTranscriptReadScope,
 } from "./session-transcript-read-target.js";
 
-export type {
-  ReadSessionMessagesAsyncOptions,
-  ReadRecentSessionMessagesResult,
-  SessionTranscriptReadScope,
-} from "./session-transcript-read-kernel.js";
+export type { SessionTranscriptReadScope } from "./session-transcript-read-kernel.js";
 export { capArrayByJsonBytes } from "./session-utils.fs.js";
 export { attachOpenClawTranscriptMeta } from "./session-transcript-entry-message.js";
 export { readSessionTranscriptVisibleMessageDeltaCore } from "../config/sessions/session-accessor.sqlite-active-events.js";
