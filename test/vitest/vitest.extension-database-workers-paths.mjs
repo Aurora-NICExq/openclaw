@@ -89,6 +89,7 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/reef/src/channel.test.ts",
   "extensions/reef/src/setup.test.ts",
   "extensions/reef/src/state.test.ts",
+  "extensions/signal/src/reply-authors.test.ts",
   "extensions/sms/src/media-limits.test.ts",
   "extensions/sms/src/media.test.ts",
   "extensions/synology-chat/src/outbound-media.test.ts",
