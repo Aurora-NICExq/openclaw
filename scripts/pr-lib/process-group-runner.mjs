@@ -41,8 +41,12 @@ if (process.platform === "darwin") {
   );
   if (identity.status !== 0 || !identity.stdout?.trim()) {
     console.error("Darwin PR locks require Python 3 with ctypes and readable libproc identity.");
-    if (identity.error) console.error(identity.error.message);
-    if (identity.stderr) console.error(identity.stderr.trim());
+    if (identity.error) {
+      console.error(identity.error.message);
+    }
+    if (identity.stderr) {
+      console.error(identity.stderr.trim());
+    }
     process.exit(1);
   }
 }
