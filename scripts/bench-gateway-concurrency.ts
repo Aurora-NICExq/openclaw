@@ -20,8 +20,13 @@ import type { ModelsListResult } from "../packages/gateway-protocol/src/schema/a
 import { asFiniteNumber } from "../packages/normalization-core/src/number-coercion.ts";
 import { isRecord } from "../packages/normalization-core/src/record-coerce.ts";
 import { sliceUtf16Safe } from "../packages/normalization-core/src/utf16-slice.ts";
+import type { waitForAgentJob } from "../src/gateway/agent-turn/agent-job.js";
 import type { SessionsListResult } from "../src/gateway/session-utils.types.js";
 import { applyMockOpenAiModelConfig } from "./e2e/lib/fixtures/mock-openai-config.mjs";
+import {
+  summarizeMockInferenceRequest,
+  type MockInferenceFacts,
+} from "./e2e/lib/mock-inference-facts.ts";
 import {
   startGatewayBrowserProbe,
   type BrowserSessionClick,
@@ -159,12 +164,26 @@ type BenchmarkRun = {
     exitEvent: GatewayChildExit | undefined;
     closeEvent: GatewayChildExit | undefined;
   };
+  processPlacement?: {
+    driver: { pid: number; affinity?: string };
+    mockProvider: { pid: number; affinity?: string };
+  };
   loadWindow?: { startMonotonicMicros: number; endMonotonicMicros: number };
   history: Array<TimedProbe & { sessionKey?: string }>;
   memory: { after: GatewayMemorySample; before: GatewayMemorySample; peakRssMb: number };
   messageSubscriptions: TimedProbe[];
   messageSubscriptionsDuringLoad: TimedProbe[];
   modelRequestCount: number;
+  providerRequests: ReturnType<typeof summarizeProviderRequests>;
+  turnAccounting: { launched: number; terminalOk: number; verified: number };
+  agentWarmup: {
+    durationMs: number;
+    launched: number;
+    terminalOk: number;
+    verified: number;
+    beforeOrdinal: number;
+    afterOrdinal: number;
+  };
   probeWarmup: {
     durationMs: number;
     samples: GatewaySample[];
@@ -181,6 +200,8 @@ type BenchmarkRun = {
 
 type CliOptions = {
   agentCount: number;
+  agentWarmupTurns: number;
+  gatewayCpus?: string;
   browserHistoryMessages: number;
   browserSessionClicks: number;
   cadenceMs: number;
@@ -222,6 +243,8 @@ const DEFAULT_RUNS = 1;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_WARMUP = 0;
 const MOCK_RESPONSE_CHUNK_DELAY_MS = 1_000;
+const STREAM_SUCCESS_MARKER = "OpenClaw gateway concurrency benchmark streaming response.";
+const TOOL_SUCCESS_MARKER = "OPENCLAW_E2E_DRAFTPROOF";
 const MAX_AGENT_COUNT = 128;
 const MAX_CONCURRENCY = 64;
 const MAX_TURNS_PER_SESSION = 100;
@@ -251,6 +274,8 @@ const BOOLEAN_FLAGS = new Set([
 ]);
 const VALUE_FLAGS = new Set([
   "--agent-count",
+  "--agent-warmup-turns",
+  "--gateway-cpus",
   "--browser-history-messages",
   "--browser-session-clicks",
   "--cadence-ms",
@@ -438,6 +463,13 @@ function parseOptions(argv: string[] = process.argv.slice(2)): CliOptions {
       "--timeout-ms",
       10 * 60_000,
     ),
+    gatewayCpus: parseFlagValue(argv, "--gateway-cpus"),
+    agentWarmupTurns: parseBoundedNonNegativeInt(
+      parseFlagValue(argv, "--agent-warmup-turns"),
+      0,
+      "--agent-warmup-turns",
+      MAX_WARMUP,
+    ),
     toolEvents: hasFlag(argv, "--tool-events"),
     turnsPerSession: parseBoundedPositiveInt(
       parseFlagValue(argv, "--turns-per-session"),
@@ -454,6 +486,9 @@ function parseOptions(argv: string[] = process.argv.slice(2)): CliOptions {
     ),
     workspaceFanout: hasFlag(argv, "--workspace-fanout"),
   };
+  if (options.gatewayCpus !== undefined && !/^\d+(?:,\d+)*$/u.test(options.gatewayCpus)) {
+    throw new CliArgumentError("--gateway-cpus requires comma-separated CPU numbers");
+  }
   if (options.loadCpuProfDir && options.heapProfDir) {
     throw new CliArgumentError(
       "--load-cpu-prof-dir and --heap-prof-dir require separate benchmark runs",
@@ -494,6 +529,8 @@ Options:
   --browser-history-messages <n> Messages per browser click target, independent of inventory history (default: 80, max: 500)
   --browser-session-clicks <n> Click n existing sessions and revisit one during load (default: 0, max: 20; requires built UI and Chromium)
   --concurrency <n>  Concurrent synthetic sessions (default: ${DEFAULT_CONCURRENCY})
+  --gateway-cpus <list> Linux Gateway-only CPU affinity (comma-separated CPU numbers)
+  --agent-warmup-turns <n> Verified turns per active session in the same Gateway before load (default: 0, max: ${MAX_WARMUP})
   --turns-per-session <n> Serial turns per session (default: 1, max: ${MAX_TURNS_PER_SESSION})
   --control-plane   Also probe tasks.list, cron.list, and cron.status during load
   --history-messages <n> Inject up to 500 synthetic messages per seeded session
@@ -965,27 +1002,157 @@ async function timeRpcProbe(
   }
 }
 
+function readProviderRequestLog(file: string): string[] {
+  // A live append may have an incomplete final record. Its producer ordinal belongs to the next snapshot.
+  return existsSync(file) ? readFileSync(file, "utf8").split("\n").slice(0, -1) : [];
+}
+
+function summarizeProviderRequests(
+  lines: string[],
+  beforeLoad: number,
+  afterLoad: number,
+  warmup?: { beforeOrdinal: number; afterOrdinal: number },
+) {
+  if (beforeLoad < 0 || beforeLoad > afterLoad || afterLoad > lines.length) {
+    throw new Error("mock provider request snapshots are out of order");
+  }
+  if (
+    warmup &&
+    (warmup.beforeOrdinal < 0 ||
+      warmup.beforeOrdinal > warmup.afterOrdinal ||
+      warmup.afterOrdinal > beforeLoad)
+  ) {
+    throw new Error("mock provider warmup snapshots are out of order");
+  }
+  const createPhase = () => ({
+    total: 0,
+    inference: 0,
+    byEndpoint: {} as Record<string, number>,
+    requestBytes: 0,
+    unknownRequestBytes: 0,
+    bytesByEndpoint: {} as Record<string, number>,
+    bytesByPurpose: { "activity-recap": 0, "session-observer": 0, "benchmark-turn": 0, other: 0 },
+    byPurpose: { "activity-recap": 0, "session-observer": 0, "benchmark-turn": 0, other: 0 },
+  });
+  const phases = {
+    warmup: createPhase(),
+    setup: createPhase(),
+    load: createPhase(),
+    afterLoad: createPhase(),
+  };
+  const turns = new Map<number, { withoutToolOutput: number; withToolOutput: number }>();
+  let unboundInference = 0;
+  const loadContinuations = { withPreviousResponse: 0, withToolOutput: 0, unboundToolOutput: 0 };
+  for (const [index, line] of lines.entries()) {
+    const record = JSON.parse(line) as {
+      seq: number;
+      method: string;
+      path: string;
+      body: unknown;
+      requestBytes?: number;
+      inferenceFacts?: MockInferenceFacts;
+    };
+    if (record.seq !== index + 1) {
+      throw new Error("mock provider request log has a missing or repeated ordinal");
+    }
+    const phase =
+      warmup && record.seq > warmup.beforeOrdinal && record.seq <= warmup.afterOrdinal
+        ? phases.warmup
+        : record.seq <= beforeLoad
+          ? phases.setup
+          : record.seq <= afterLoad
+            ? phases.load
+            : phases.afterLoad;
+    const endpoint = `${record.method} ${record.path}`;
+    const bytes = record.requestBytes;
+    const knownBytes = typeof bytes === "number" && Number.isSafeInteger(bytes) && bytes >= 0;
+    phase.requestBytes += knownBytes ? bytes : 0;
+    phase.unknownRequestBytes += Number(!knownBytes);
+    phase.bytesByEndpoint[endpoint] =
+      (phase.bytesByEndpoint[endpoint] ?? 0) + (knownBytes ? bytes : 0);
+    phase.total += 1;
+    phase.byEndpoint[endpoint] = (phase.byEndpoint[endpoint] ?? 0) + 1;
+    if (
+      record.method !== "POST" ||
+      !["/v1/responses", "/v1/chat/completions"].includes(record.path)
+    ) {
+      continue;
+    }
+    phase.inference += 1;
+    let body: unknown;
+    // The mock intentionally replaces oversized or unparseable bodies with bounded evidence.
+    // Keep those arrivals in the denominator even when a turn marker cannot be recovered.
+    if (typeof record.body === "string") {
+      try {
+        body = JSON.parse(record.body);
+      } catch {
+        body = undefined;
+      }
+    }
+    const facts = record.inferenceFacts ?? summarizeMockInferenceRequest(body);
+    phase.byPurpose[facts.purpose] += 1;
+    phase.bytesByPurpose[facts.purpose] += knownBytes ? bytes : 0;
+    if (phase !== phases.load) {
+      continue;
+    }
+    loadContinuations.withPreviousResponse += Number(facts.hasPreviousResponse);
+    loadContinuations.withToolOutput += Number(facts.hasToolOutput);
+    const turnIndex = facts.benchmarkPhase === "load" ? facts.turnIndex : undefined;
+    if (turnIndex === undefined) {
+      loadContinuations.unboundToolOutput += Number(facts.hasToolOutput);
+      unboundInference += 1;
+      continue;
+    }
+    const turn = turns.get(turnIndex) ?? { withoutToolOutput: 0, withToolOutput: 0 };
+    turn[facts.hasToolOutput ? "withToolOutput" : "withoutToolOutput"] += 1;
+    turns.set(turnIndex, turn);
+  }
+  return {
+    scope:
+      "complete request records observed at snapshots outside the timed load; arrivals, not HTTP completion status",
+    beforeLoadOrdinal: beforeLoad,
+    afterLoadOrdinal: afterLoad,
+    ...phases,
+    loadTurns: [...turns]
+      .toSorted(([left], [right]) => left - right)
+      .map(([turnIndex, counts]) => ({
+        turnIndex,
+        withoutToolOutput: counts.withoutToolOutput,
+        withToolOutput: counts.withToolOutput,
+      })),
+    loadPurposes: phases.load.byPurpose,
+    loadContinuations,
+    unboundLoadInference: unboundInference,
+    unclassifiedLoadInference: phases.load.byPurpose.other,
+  };
+}
+
 async function runTurn(
   rpc: GatewayRpc,
   index: number,
   deadlineAt: number,
   toolEvents = false,
-  options?: { onStarted?: () => void; sessionKey?: string },
+  options?: {
+    onStarted?: () => void;
+    warmup?: boolean;
+    sessionKey?: string;
+    accounting?: BenchmarkRun["turnAccounting"];
+  },
 ): Promise<void> {
   const requestedRunId = randomUUID();
+  if (options?.accounting) {
+    options.accounting.launched += 1;
+  }
   const started = await rpc<{ runId?: string; status?: string }>("agent", {
     sessionKey: options?.sessionKey ?? `agent:main:gateway-concurrency-${index + 1}`,
     message: toolEvents
-      ? `OPENCLAW_E2E_DRAFTPROOF benchmark tool stream ${index + 1}.`
-      : `Reply with benchmark stream ${index + 1}.`,
+      ? `${TOOL_SUCCESS_MARKER} benchmark ${options?.warmup ? "warmup " : ""}tool stream ${index + 1}.`
+      : `Reply with benchmark ${options?.warmup ? "warmup " : ""}stream ${index + 1}.`,
     deliver: false,
     idempotencyKey: requestedRunId,
   });
   options?.onStarted?.();
-  if (started.status === "ok") {
-    return;
-  }
-  if (started.status !== "accepted") {
+  if (started.status !== "accepted" && started.status !== "ok") {
     throw new Error(`agent ${index + 1} was not accepted: ${JSON.stringify(started)}`);
   }
   const remaining = requireRemainingMs(deadlineAt, `waiting for agent ${index + 1} completion`);
@@ -993,16 +1160,42 @@ async function runTurn(
   // an active turn while the benchmark still has time to measure completion.
   const waitTimeoutMs = Math.max(0, Math.floor(remaining - AGENT_WAIT_RPC_GRACE_MS));
   const rpcTimeoutMs = Math.max(1, Math.ceil(remaining));
-  const completed = await rpc<{ status?: string }>(
+  const runId = started.runId ?? requestedRunId;
+  const completed = await rpc<NonNullable<Awaited<ReturnType<typeof waitForAgentJob>>>>(
     "agent.wait",
     {
-      runId: started.runId ?? requestedRunId,
+      runId,
       timeoutMs: waitTimeoutMs,
     },
     rpcTimeoutMs,
   );
   if (completed.status !== "ok") {
     throw new Error(`agent ${index + 1} did not complete: ${JSON.stringify(completed)}`);
+  }
+  if (options?.accounting) {
+    options.accounting.terminalOk += 1;
+  }
+  const receipt = completed.terminalReceipt;
+  const reply = completed.terminalReply;
+  if (
+    completed.error ||
+    completed.pendingError ||
+    completed.yielded ||
+    receipt?.runId !== runId ||
+    !receipt.sessionId ||
+    !receipt.turnId ||
+    receipt.rerouted ||
+    receipt.terminalDisposition !== "visible" ||
+    receipt.effective.provider !== "openai" ||
+    receipt.effective.model !== "gpt-5.6-luna" ||
+    reply?.disposition !== "visible" ||
+    reply.text !== (toolEvents ? TOOL_SUCCESS_MARKER : STREAM_SUCCESS_MARKER) ||
+    (toolEvents && !receipt.successfulToolNames.includes("exec"))
+  ) {
+    throw new Error(`agent ${index + 1} terminal evidence failed: ${JSON.stringify(completed)}`);
+  }
+  if (options?.accounting) {
+    options.accounting.verified += 1;
   }
 }
 
@@ -1012,15 +1205,19 @@ async function runSessionTurns(
   deadlineAt: number,
   options: {
     onStarted?: () => void;
+    warmup?: boolean;
     sessionKey: string;
     toolEvents: boolean;
     turnsPerSession: number;
+    accounting?: BenchmarkRun["turnAccounting"];
   },
 ): Promise<number> {
   for (let turn = 0; turn < options.turnsPerSession; turn += 1) {
     requireRemainingMs(deadlineAt, `starting session ${index + 1} turn ${turn + 1}`);
     await runTurn(rpc, index * options.turnsPerSession + turn, deadlineAt, options.toolEvents, {
       sessionKey: options.sessionKey,
+      warmup: options.warmup,
+      accounting: options.accounting,
       onStarted: turn === 0 ? options.onStarted : undefined,
     });
   }
@@ -1198,6 +1395,8 @@ async function runProbeRounds(params: {
 
 async function runGatewaySample(options: {
   agentCount: number;
+  agentWarmupTurns: number;
+  gatewayCpus?: string;
   browserHistoryMessages: number;
   browserSessionClicks: number;
   cadenceMs: number;
@@ -1262,6 +1461,17 @@ async function runGatewaySample(options: {
     closeEvent: gatewayCloseEvent,
   });
   let timelineWindow: { from: number; through: number } | undefined;
+  const turnAccounting = { launched: 0, terminalOk: 0, verified: 0 };
+  const agentWarmup = {
+    durationMs: 0,
+    launched: 0,
+    terminalOk: 0,
+    verified: 0,
+    beforeOrdinal: 0,
+    afterOrdinal: 0,
+  };
+  let providerBeforeLoad: number | undefined;
+  let providerAfterLoad: number | undefined;
 
   try {
     try {
@@ -1282,7 +1492,7 @@ async function runGatewaySample(options: {
           MOCK_PORT: String(mockPort),
           MOCK_REQUEST_LOG: requestLogPath,
           MOCK_RESPONSE_CHUNK_DELAY_MS: String(options.streamChunkDelayMs),
-          SUCCESS_MARKER: "OpenClaw gateway concurrency benchmark streaming response.",
+          SUCCESS_MARKER: STREAM_SUCCESS_MARKER,
         },
       });
       mockOutput = captureChildOutput(mockProvider);
@@ -1303,11 +1513,17 @@ async function runGatewaySample(options: {
           }
         }
       }
+      if (options.gatewayCpus && process.platform !== "linux") {
+        throw new Error("--gateway-cpus requires Linux taskset");
+      }
+      const profiledArgs = options.cpuProfDir
+        ? ["--cpu-prof", `--cpu-prof-dir=${options.cpuProfDir}`, ...gatewayArgs]
+        : gatewayArgs;
       gateway = spawn(
-        process.execPath,
-        options.cpuProfDir
-          ? ["--cpu-prof", `--cpu-prof-dir=${options.cpuProfDir}`, ...gatewayArgs]
-          : gatewayArgs,
+        options.gatewayCpus ? "taskset" : process.execPath,
+        options.gatewayCpus
+          ? ["--cpu-list", options.gatewayCpus, process.execPath, ...profiledArgs]
+          : profiledArgs,
         {
           cwd: process.cwd(),
           detached: process.platform !== "win32",
@@ -1606,6 +1822,31 @@ async function runGatewaySample(options: {
       if (subscriptionProbeClient) {
         auxiliaryClients.push(subscriptionProbeClient);
       }
+      agentWarmup.beforeOrdinal = readProviderRequestLog(requestLogPath).length;
+      const agentWarmupStartedAt = performance.now();
+      if (options.agentWarmupTurns > 0) {
+        const warmupDeadlineAt = performance.now() + options.timeoutMs;
+        client.setDeadlineAt(warmupDeadlineAt);
+        try {
+          await Promise.all(
+            turnSessionKeys.map((sessionKey, index) =>
+              runSessionTurns(rpc, index, warmupDeadlineAt, {
+                sessionKey,
+                warmup: true,
+                toolEvents: options.toolEvents,
+                turnsPerSession: options.agentWarmupTurns,
+                accounting: agentWarmup,
+              }),
+            ),
+          );
+        } finally {
+          agentWarmup.durationMs = performance.now() - agentWarmupStartedAt;
+          agentWarmup.afterOrdinal = readProviderRequestLog(requestLogPath).length;
+        }
+      } else {
+        agentWarmup.afterOrdinal = agentWarmup.beforeOrdinal;
+      }
+      // Warm turns exercise this Gateway's runtime; they do not prove background queues drained.
       const memoryBefore = await readGatewayMemory(rpc, runStartedAt);
       if (loadCpuProfilePath) {
         await controlGatewayProfile(gateway, "cpu", "start", loadCpuProfilePath, {
@@ -1643,6 +1884,24 @@ async function runGatewaySample(options: {
       const allTurnsStarted = new Promise<void>((resolve) => {
         resolveAllTurnsStarted = resolve;
       });
+      providerBeforeLoad = readProviderRequestLog(requestLogPath).length;
+      const processPlacement =
+        process.platform === "linux" && mockProvider.pid
+          ? {
+              driver: {
+                pid: process.pid,
+                affinity: readFileSync("/proc/self/status", "utf8").match(
+                  /^Cpus_allowed_list:\s*(.+)$/mu,
+                )?.[1],
+              },
+              mockProvider: {
+                pid: mockProvider.pid,
+                affinity: readFileSync(`/proc/${mockProvider.pid}/status`, "utf8").match(
+                  /^Cpus_allowed_list:\s*(.+)$/mu,
+                )?.[1],
+              },
+            }
+          : undefined;
       const cpuBefore = await readGatewayCpuUsage(gateway);
       const turnsStartedAt = performance.now();
       // Keep the live artifact intact: buffered setup writes can arrive after this boundary.
@@ -1661,6 +1920,7 @@ async function runGatewaySample(options: {
             sessionKey,
             toolEvents: options.toolEvents,
             turnsPerSession: options.turnsPerSession,
+            accounting: turnAccounting,
           }),
         ),
       ).finally(() => {
@@ -1826,6 +2086,7 @@ async function runGatewaySample(options: {
       const cpuAfter = await readGatewayCpuUsage(gateway);
       const loadEndMonotonicMicros = Number(process.hrtime.bigint() / 1_000n);
       const turnsDurationMs = performance.now() - turnsStartedAt;
+      providerAfterLoad = readProviderRequestLog(requestLogPath).length;
       const memoryAfter = await readGatewayMemory(rpc, runStartedAt);
       timelineWindow = { from: timelineFrom, through: Date.now() };
       let loadCpuProfile: BenchmarkRun["loadCpuProfile"];
@@ -1851,9 +2112,17 @@ async function runGatewaySample(options: {
         throw new Error(`all configured chat.history load probes failed: ${failure}`);
       }
       peakRssMb = Math.max(peakRssMb, memoryAfter.rssMb);
-      const modelRequestCount = existsSync(requestLogPath)
-        ? readFileSync(requestLogPath, "utf8").split(/\r?\n/u).filter(Boolean).length
-        : 0;
+      const providerRequests = summarizeProviderRequests(
+        readProviderRequestLog(requestLogPath),
+        providerBeforeLoad,
+        providerAfterLoad,
+        agentWarmup,
+      );
+      const modelRequestCount =
+        providerRequests.warmup.inference +
+        providerRequests.setup.inference +
+        providerRequests.load.inference +
+        providerRequests.afterLoad.inference;
 
       if (agentCoverage) {
         agentCoverage.completedTurns = agentIds.map((agentId) => ({
@@ -1882,6 +2151,7 @@ async function runGatewaySample(options: {
         controlPlane,
         controlUi,
         cpuUsage: measureGatewayCpuUsage(cpuBefore, cpuAfter),
+        processPlacement,
         durationMs: performance.now() - runStartedAt,
         freshConnection: freshConnectionResult,
         history,
@@ -1893,6 +2163,9 @@ async function runGatewaySample(options: {
         messageSubscriptions,
         messageSubscriptionsDuringLoad,
         modelRequestCount,
+        providerRequests,
+        turnAccounting,
+        agentWarmup,
         probeWarmup,
         pluginMetadataScans: summarizePluginMetadataScans([]),
         readyz,
@@ -1905,6 +2178,17 @@ async function runGatewaySample(options: {
       };
     } catch (error) {
       const detail = formatRunFailure(error, gatewayOutput, mockOutput);
+      console.error(
+        `turn accounting at failure: ${JSON.stringify({ requested: options.concurrency * options.turnsPerSession, ...turnAccounting, agentWarmup })}`,
+      );
+      try {
+        const requests = readProviderRequestLog(requestLogPath);
+        console.error(
+          `provider requests at failure: ${JSON.stringify(summarizeProviderRequests(requests, providerBeforeLoad ?? requests.length, providerAfterLoad ?? requests.length, agentWarmup))}`,
+        );
+      } catch (accountingError) {
+        console.error(`provider request accounting failed: ${String(accountingError)}`);
+      }
       throw new Error(detail, { cause: error });
     } finally {
       probesStopped = true;
@@ -2227,10 +2511,15 @@ async function main(): Promise<void> {
     sessionUpdateClients: options.sessionUpdates > 0 ? options.sessionUpdateClients : 0,
     sessionUpdates: options.sessionUpdates,
     streamChunkDelayMs: options.streamChunkDelayMs,
+    effectivePacing: options.toolEvents
+      ? { kind: "shell-delay", toolDelayMs: 3000, streamChunkDelayMs: 0 }
+      : { kind: "text-stream", streamChunkDelayMs: options.streamChunkDelayMs },
     subscribers: options.subscribers,
     summary: summarizeRuns(runs, options),
     toolEvents: options.toolEvents,
     turnsPerSession: options.turnsPerSession,
+    agentWarmupTurns: options.agentWarmupTurns,
+    gatewayCpus: options.gatewayCpus,
     visibleObserver: options.visibleObserver,
     workspaceFanout: options.workspaceFanout,
   };
@@ -2260,6 +2549,7 @@ export const testing = {
   summarizePluginMetadataScans,
   summarizeNumbers,
   summarizeRuns,
+  summarizeProviderRequests,
   tailLines,
   warmGatewayProbes,
 };
