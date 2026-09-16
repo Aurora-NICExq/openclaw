@@ -129,6 +129,8 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/reef/src/inbox-cursor.test.ts",
   "extensions/reef/src/setup.test.ts",
   "extensions/reef/src/state.test.ts",
+  "extensions/reef/src/replay-state.test.ts",
+  "extensions/reef/src/transport-capacity-recovery.test.ts",
   "extensions/sms/src/media-limits.test.ts",
   "extensions/sms/src/media.test.ts",
   "extensions/synology-chat/src/outbound-media.test.ts",
