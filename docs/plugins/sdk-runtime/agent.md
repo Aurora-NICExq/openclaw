@@ -58,6 +58,17 @@ callback preserves existing behavior. Set `allowProfileFallback: false` when
 the selected profile represents an account boundary that must not rotate to a
 different configured profile.
 
+## Bounded model context
+
+`SessionManager.openModelContext` and `openModelContextAsync` from
+`openclaw/plugin-sdk/agent-sessions` accept optional `limits: { maxBytes, maxEvents }`.
+The reader measures projected payload bytes in SQLite before loading them and
+selects a recent context with its latest compaction or reset boundary. It preserves
+tool-result ownership and rejects a limit that cannot retain the newest complete
+frame or required boundary. Stored transcripts stay unchanged. Omitting `limits`
+keeps the full selected context. Async reads retain admission, anchor, and
+cancellation checks.
+
 ## Agent and session namespaces
 
 <AccordionGroup>
@@ -116,6 +127,8 @@ different configured profile.
     `runEmbeddedAgent(...)` is the neutral helper for starting a normal OpenClaw agent turn from plugin code. It uses the same provider/model resolution and agent-harness selection as channel-triggered replies.
 
     `resolveCliBackendDispatchEligibility({ provider, model, agentId, authProfileId, config, agentDir, workspaceDir })` shares the embedded runner's CLI-backend dispatch decision (route, the backend's declared `subscriptionAuthDispatch` capability, stored credential mode — honoring an explicitly pinned `authProfileId`) with callers that opt embedded runs into `cliBackendDispatch: "subscription-auth"`. It returns `{ provider }` when the run would execute through the CLI backend and `undefined` when it stays on the direct passthrough, so callers can budget timeouts for the run that will actually execute.
+
+    Raw calls using this CLI opt-in keep the saved session fallback for same-agent child model selection. Explicit and configured child models still take precedence.
 
     `resolveThinkingPolicy(...)` returns the provider/model's supported thinking levels and optional default. Provider plugins own the model-specific profile through their thinking hooks, so tool plugins should call this runtime helper instead of importing or duplicating provider lists.
 

@@ -65,12 +65,13 @@ export function resolveSubagentModelAndThinkingPlan(params: {
   inheritedModel?: ModelRef;
   fastMode?: FastMode;
 }) {
-  const { model: rawResolvedModel } = resolveSubagentSpawnModelSelection({
-    cfg: params.cfg,
-    agentId: params.targetAgentId,
-    modelOverride: params.modelOverride,
-    inheritedModel: params.inheritedModel,
-  });
+  const { model: rawResolvedModel, resolvedModel: inheritedModel } =
+    resolveSubagentSpawnModelSelection({
+      cfg: params.cfg,
+      agentId: params.targetAgentId,
+      modelOverride: params.modelOverride,
+      inheritedModel: params.inheritedModel,
+    });
   const { model: resolvedModel, profile: authProfileId } =
     splitTrailingAuthProfile(rawResolvedModel);
 
@@ -118,6 +119,7 @@ export function resolveSubagentModelAndThinkingPlan(params: {
   return {
     status: "ok" as const,
     resolvedModel,
+    ...(inheritedModel ? { inheritedModel } : {}),
     modelApplied: Boolean(resolvedModel),
     thinkingOverride: thinkingPlan.thinkingOverride,
     initialSessionPatch: {

@@ -113,12 +113,14 @@ describe("trusted in-process Gateway session creation", () => {
       deny: ["exec"],
     };
     const resolvedModel = { provider: "custom", model: "middle" };
+    const spawnModelAutoSelection = { model: "custom/middle", hasFallbackOrigin: true };
 
     mocks.callGatewayTool.mockImplementationOnce(async () => {
       expect(getGatewaySessionSpawnContext()).toEqual({
         completionOwnerSessionKey: "agent:main:discord:direct:alice",
         inheritedToolPolicy,
         resolvedModel,
+        spawnModelAutoSelection,
       });
       return { key: "agent:main:dashboard:child" };
     });
@@ -138,6 +140,7 @@ describe("trusted in-process Gateway session creation", () => {
         completionOwnerSessionKey: "agent:main:discord:direct:alice",
         inheritedToolPolicy,
         resolvedModel,
+        spawnModelAutoSelection,
       },
     );
 

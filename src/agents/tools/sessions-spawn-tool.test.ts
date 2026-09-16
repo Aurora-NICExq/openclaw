@@ -1111,11 +1111,18 @@ describe("sessions_spawn tool", () => {
     {
       target: "main",
       requestedModel: undefined,
+      configuredModel: "openai/gpt-5.6-luna@preferred",
+      expectedModel: "openai/gpt-5.6-luna@preferred",
+    },
+    {
+      target: "main",
+      requestedModel: undefined,
       requesterModel: { provider: "custom", model: "custom/model" },
       expectedModel: "custom/custom/model",
     },
   ])("uses $expectedModel for a visible $target session", async (scenario) => {
     const { target, requestedModel, expectedModel } = scenario;
+    const configuredModel = "configuredModel" in scenario ? scenario.configuredModel : undefined;
     const callGateway = hoisted.inProcessCreationMock.mockResolvedValue({
       key: "agent:reviewer:dashboard:child",
       runStarted: true,
@@ -1132,7 +1139,7 @@ describe("sessions_spawn tool", () => {
         agents: {
           defaults: { subagents: { allowAgents: ["main", "reviewer"] } },
           list: [
-            { id: "main" },
+            { id: "main", ...(configuredModel ? { subagents: { model: configuredModel } } : {}) },
             { id: "reviewer", subagents: { model: "anthropic/claude-sonnet-4-6" } },
           ],
         },
@@ -1160,10 +1167,17 @@ describe("sessions_spawn tool", () => {
     );
     expect(mockCallArg(callGateway, 0, 1, "sessions.create")).not.toHaveProperty("fork");
     const creation = mockCallArg(callGateway, 0, 2, "sessions.create");
-    if (target === "main" && requestedModel === undefined) {
+    if (target === "main" && requestedModel === undefined && !configuredModel) {
       expect(creation).toMatchObject({ resolvedModel: requesterModel });
     } else {
       expect(creation).not.toHaveProperty("resolvedModel");
+    }
+    if (requestedModel) {
+      expect(creation).not.toHaveProperty("spawnModelAutoSelection");
+    } else {
+      expect(creation).toMatchObject({
+        spawnModelAutoSelection: { model: expectedModel, hasFallbackOrigin: true },
+      });
     }
   });
 
@@ -1369,7 +1383,10 @@ describe("sessions_spawn tool", () => {
     const tool = createSessionsSpawnTool({
       agentSessionKey: "agent:main:main",
       config: {
-        agents: { list: [{ id: "main", identity: { name: "Roboclaw" } }] },
+        agents: {
+          defaults: { model: "mock-provider/primary" },
+          list: [{ id: "main", identity: { name: "Roboclaw" } }],
+        },
         gateway: { publicOrigin: "https://openclaw.example", controlUi: { basePath: "/control" } },
       },
       inheritedToolAllowlist: ["read", "sessions_spawn"],
@@ -1404,6 +1421,7 @@ describe("sessions_spawn tool", () => {
         actor: { type: "agent", id: "main" },
         requesterSessionKey: "agent:main:main",
         completionOwnerSessionKey: "agent:main:main",
+        spawnModelAutoSelection: { model: "mock-provider/primary", hasFallbackOrigin: false },
         inheritedToolPolicy: {
           version: 1,
           allow: ["read", "sessions_spawn"],

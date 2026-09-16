@@ -83,6 +83,7 @@ test.each([
   const spawnContext = {
     inheritedToolPolicy: { version: 1 as const, allow: ["read"], deny: [] },
     resolvedModel,
+    spawnModelAutoSelection: { model: `custom/${model}`, hasFallbackOrigin: true },
   };
   const creation = {
     via: "spawn" as const,
@@ -175,6 +176,13 @@ test.each([
         providerOverride: "custom",
         modelOverride: expected,
         modelOverrideRouteResolution: "resolved",
+        modelOverrideSource: mode === "public" ? "user" : "auto",
+        ...(mode !== "public"
+          ? {
+              modelOverrideFallbackOriginProvider: "custom",
+              modelOverrideFallbackOriginModel: expected,
+            }
+          : {}),
       });
     }
   } finally {

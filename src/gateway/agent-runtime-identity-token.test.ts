@@ -395,6 +395,7 @@ describe("agent runtime identity token", () => {
         {
           completionOwnerSessionKey: " agent:main:discord:direct:alice ",
           resolvedModel: { provider: "custom", model: "custom/model" },
+          spawnModelAutoSelection: { model: "custom/custom/model", hasFallbackOrigin: true },
           inheritedToolPolicy: {
             version: 1,
             allow: [" read ", "sessions_spawn"],
@@ -429,6 +430,7 @@ describe("agent runtime identity token", () => {
       sessionSpawnContext: {
         completionOwnerSessionKey: "agent:main:discord:direct:alice",
         resolvedModel: { provider: "custom", model: "custom/model" },
+        spawnModelAutoSelection: { model: "custom/custom/model", hasFallbackOrigin: true },
         inheritedToolPolicy: {
           version: 1,
           allow: ["read", "sessions_spawn"],

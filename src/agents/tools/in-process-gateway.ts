@@ -395,6 +395,9 @@ export async function callInProcessGatewayToolWithCreation<T = Record<string, un
             : {}),
           inheritedToolPolicy: creation.inheritedToolPolicy,
           ...(creation.resolvedModel ? { resolvedModel: creation.resolvedModel } : {}),
+          ...(creation.spawnModelAutoSelection
+            ? { spawnModelAutoSelection: creation.spawnModelAutoSelection }
+            : {}),
         },
         () =>
           callGatewayTool<T>(method, {}, params, {
