@@ -1907,7 +1907,7 @@ describe("subscribeEmbeddedAgentSession", () => {
     { finalText: "First.\nDone.", deferred: true },
     { finalText: "", deferred: false },
   ])(
-    "scopes tool-separated assistant snapshots and preserves authoritative final %j after a late block end",
+    "subscribeEmbeddedAgentSession supersedes deferred progress and preserves authoritative final %j after a late block end",
     async ({ finalText, deferred }) => {
       const onAgentEvent = vi.fn();
       const { emit, subscription } = createSubscribedSessionHarness({
@@ -1963,13 +1963,13 @@ describe("subscribeEmbeddedAgentSession", () => {
         await subscription.waitForPendingEvents();
 
         const finalizedPayloads = assistantPayloads();
-        const firstMessage = expectDefined(
-          finalizedPayloads[0],
-          "first assistant message snapshot",
-        );
-        expect(firstMessage).toMatchObject({ text: "Before tool.", itemId: expect.any(String) });
-        expect(firstMessage.itemId).not.toBe("");
-        const streamed = finalizedPayloads.slice(1, -1);
+        expect(finalizedPayloads).toHaveLength(deferred ? 3 : 4);
+        const firstMessage = deferred ? undefined : finalizedPayloads[0];
+        if (!deferred) {
+          expect(firstMessage).toMatchObject({ text: "Before tool.", itemId: expect.any(String) });
+          expect(firstMessage?.itemId).not.toBe("");
+        }
+        const streamed = finalizedPayloads.slice(deferred ? 0 : 1, -1);
         expect(streamed.map((payload) => payload.text)).toEqual([
           firstBlock,
           `${firstBlock}\n${lastBlock}`,
@@ -1977,7 +1977,9 @@ describe("subscribeEmbeddedAgentSession", () => {
         const secondItemId = expectDefined(streamed[0], "second message preview").itemId;
         expect(secondItemId).toEqual(expect.any(String));
         expect(secondItemId).not.toBe("");
-        expect(secondItemId).not.toBe(firstMessage.itemId);
+        if (firstMessage) {
+          expect(secondItemId).not.toBe(firstMessage.itemId);
+        }
         expect(streamed.every((payload) => payload.itemId === secondItemId)).toBe(true);
         expect(finalizedPayloads.at(-1)).toMatchObject({ text: finalText, itemId: secondItemId });
 
@@ -1996,7 +1998,9 @@ describe("subscribeEmbeddedAgentSession", () => {
         const latestByMessage = new Map(
           assistantPayloads().map((payload) => [payload.itemId, payload.text]),
         );
-        expect([...latestByMessage.values()]).toEqual(["Before tool.", finalText]);
+        expect([...latestByMessage.values()]).toEqual(
+          deferred ? [finalText] : ["Before tool.", finalText],
+        );
       } finally {
         subscription.unsubscribe();
       }
