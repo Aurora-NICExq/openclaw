@@ -28,6 +28,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: 81637ca5a74be1acb5715279b8ed305fa1c08d34
           fetch-depth: 1
           fetch-tags: false
           persist-credentials: false
@@ -110,6 +111,401 @@ jobs:
       - name: Run Rust tests
         working-directory: apps/linux/src-tauri
         run: cargo +stable test --locked --all-targets
+
+      - name: Prove reviewed Rustls owner behavior
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fix/desktop-rustls-0.23.45'
+        env:
+          PROOF_HOST_HEAD: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'TLS proof workflow head=%s product=81637ca5a74be1acb5715279b8ed305fa1c08d34\n' "$PROOF_HOST_HEAD"
+          cat > "$RUNNER_TEMP/desktop-rustls-proof.py" <<'PY_PROOF'
+          #!/usr/bin/env python3
+          """Disposable Linux TLS proof for the exact reviewed desktop lock update.
+
+          Requires a prepared normal Linux build host. No install, GUI, or host trust edits.
+          The embedded private key is public, disposable test material only.
+          """
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import signal
+          import subprocess
+          import sys
+          import tempfile
+          import textwrap
+
+          HEAD = "81637ca5a74be1acb5715279b8ed305fa1c08d34"
+          TREE = "3eae778a9e8442c36a7ea6f65f47789fe5a2fe37"
+          OWNER = "apps/linux/src-tauri/src/gateway_ws.rs"
+          PINS = {
+              "apps/linux/src-tauri/Cargo.toml": "1914273605717a186704534a1c08d88f546cd1142583225a6148e2384d5158ff",
+              "apps/linux/src-tauri/Cargo.lock": "efbea1403f24e0d918a9b6f202f78bcd8a801e98e67429ae0de54db7859ddfaa",
+              OWNER: "30e115d47f7d2cf1490ef7a82b6995360f2f6d0017fd44e8eac6dcb2c794004a",
+              "apps/linux/src-tauri/src/updater.rs": "c6483c12cd3aaeef850aebc66b96950f3275bc6da4e946df8945c77baab639eb",
+          }
+          CERTS = {'ca': 'MIIBtDCCAVugAwIBAgIUXf1ibLxZTfg+jSfjY8KODoLG5SYwCgYIKoZIzj0EAwIwKDEmMCQGA1UEAwwdT3BlbkNsYXcgZGlzcG9zYWJsZSBSdXN0bHMgY2EwHhcNMjYwOTE2MDgzOTM3WhcNMzYwOTEzMDgzOTM3WjAoMSYwJAYDVQQDDB1PcGVuQ2xhdyBkaXNwb3NhYmxlIFJ1c3RscyBjYTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABBfV377XHU/bnyKBIg913zPf9yVoOghfGFThBBwYfrwD+VC1wqMjTsCNkHy32AOgkPni2LWPnnil+5wEtsSzV9WjYzBhMB0GA1UdDgQWBBSlQw9ciM0XVNzY26PcC/Y0tRMASDAfBgNVHSMEGDAWgBSlQw9ciM0XVNzY26PcC/Y0tRMASDAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjAKBggqhkjOPQQDAgNHADBEAiBzOM5359CVr4nD7lgIyDdOBoX1D9LfKtTwiMgLp+CWoAIgDJSkwAHFnupfR2OQKmD32aSechm1sVjOKjKDvNjr+KI=', 'other_ca': 'MIIBwjCCAWegAwIBAgIUSSQgZ8W8zKY48EMKL4RCpaWXDuwwCgYIKoZIzj0EAwIwLjEsMCoGA1UEAwwjT3BlbkNsYXcgZGlzcG9zYWJsZSBSdXN0bHMgb3RoZXJfY2EwHhcNMjYwOTE2MDgzOTM3WhcNMzYwOTEzMDgzOTM3WjAuMSwwKgYDVQQDDCNPcGVuQ2xhdyBkaXNwb3NhYmxlIFJ1c3RscyBvdGhlcl9jYTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABA51Q/9vBdbam1oYUojeTh88tcn3aZsHqWGFgp2koCk/eKOe+nzlKiAsLGdBYNIZc/OZa3UiSw/nE7lT699lQ0KjYzBhMB0GA1UdDgQWBBQ8zCNyAg4QfzBTZxK/QwCwJM/iLzAfBgNVHSMEGDAWgBQ8zCNyAg4QfzBTZxK/QwCwJM/iLzAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjAKBggqhkjOPQQDAgNJADBGAiEA2UEjwFE6rtCwdZS+lZGY8sBJ8Drjswn5MML8I62t8VACIQDB1XwlROA3D7JE3msHMYuo1O8LW7ChUmdLpdm5CPLzSA==', 'leaf': 'MIIB0TCCAXegAwIBAgIUGq3nOvtnpiBYiWB3Elat9T8vPUYwCgYIKoZIzj0EAwIwKDEmMCQGA1UEAwwdT3BlbkNsYXcgZGlzcG9zYWJsZSBSdXN0bHMgY2EwHhcNMjYwOTE2MDgzOTM3WhcNMzYwOTEzMDgzOTM3WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQYVYUxgQWW/uiwsz1vvrjFd28ecKcaxUHTJBFSnPfb93iKOMQCukJdQybHWjIdqPSaMgi+ysD8sLLu0JncJYcco4GSMIGPMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMBMBoGA1UdEQQTMBGCCWxvY2FsaG9zdIcEfwAAATAdBgNVHQ4EFgQUxrRRJukOJzm9gB/uzXnMHYZ5JkMwHwYDVR0jBBgwFoAUpUMPXIjNF1Tc2Nuj3Av2NLUTAEgwCgYIKoZIzj0EAwIDSAAwRQIhANK1sloOcx8rUKQhnW7C/lqFboFeNQ3RcqVEUCE1eCLCAiBtd5c7//PxupoiHAEqVRPIoe+gRfkBl4c4ykyl3YSBfg==', 'key': 'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgaVUmRw93ZNtWSW4tzUos1x1mgmy+wHFA6luuAAwPb8ehRANCAAQYVYUxgQWW/uiwsz1vvrjFd28ecKcaxUHTJBFSnPfb93iKOMQCukJdQybHWjIdqPSaMgi+ysD8sLLu0JncJYcc'}
+          RUST = r'''
+          #[cfg(all(test, target_os = "linux"))]
+          mod rustls_security_proof {
+              use super::*;
+              use base64::Engine;
+              use rustls::pki_types::PrivatePkcs8KeyDer;
+              use std::io::{Read, Write};
+              use std::net::{TcpListener, TcpStream};
+              use std::thread;
+              use tauri_plugin_updater::UpdaterExt;
+
+              const LEAF: &str = "__LEAF__";
+              const KEY: &str = "__KEY__";
+              fn decode(value: &str) -> Vec<u8> {
+                  base64::engine::general_purpose::STANDARD
+                      .decode(value)
+                      .unwrap()
+              }
+              #[derive(Debug, Default)]
+              struct Receipt {
+                  accepted: bool,
+                  tls13: bool,
+                  request: bool,
+                  exchange: bool,
+              }
+              fn server(wss: bool) -> (u16, thread::JoinHandle<Receipt>) {
+                  let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                  let port = listener.local_addr().unwrap().port();
+                  listener.set_nonblocking(true).unwrap();
+                  let thread = thread::spawn(move || {
+                      let mut receipt = Receipt::default();
+                      let deadline = Instant::now() + Duration::from_secs(10);
+                      let mut tcp: TcpStream = loop {
+                          match listener.accept() {
+                              Ok((stream, _)) => break stream,
+                              Err(error)
+                                  if error.kind() == ErrorKind::WouldBlock && Instant::now() < deadline =>
+                              {
+                                  thread::sleep(Duration::from_millis(10));
+                              }
+                              Err(_) => return receipt,
+                          }
+                      };
+                      receipt.accepted = true;
+                      tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                      tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+                      let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+                          rustls::crypto::ring::default_provider(),
+                      ))
+                      .with_protocol_versions(&[&rustls::version::TLS13])
+                      .unwrap()
+                      .with_no_client_auth()
+                      .with_single_cert(
+                          vec![CertificateDer::from(decode(LEAF))],
+                          PrivatePkcs8KeyDer::from(decode(KEY)).into(),
+                      )
+                      .unwrap();
+                      let mut conn = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+                      while conn.is_handshaking() {
+                          if conn.complete_io(&mut tcp).is_err() {
+                              return receipt;
+                          }
+                      }
+                      receipt.tls13 = conn.protocol_version() == Some(rustls::ProtocolVersion::TLSv1_3);
+                      let mut stream = rustls::StreamOwned::new(conn, tcp);
+                      if wss {
+                          if let Ok(mut socket) = tokio_tungstenite::tungstenite::accept(stream) {
+                              receipt.request = true;
+                              if socket
+                                  .send(Message::Text("rustls-proof-server".into()))
+                                  .is_ok()
+                              {
+                                  receipt.exchange = matches!(socket.read(), Ok(Message::Text(value)) if value == "rustls-proof-client");
+                              }
+                              let _ = socket.close(None);
+                          }
+                      } else {
+                          let mut request = Vec::new();
+                          while request.len() < 8192 && !request.ends_with(b"\r\n\r\n") {
+                              let mut byte = [0];
+                              if stream.read_exact(&mut byte).is_err() {
+                                  return receipt;
+                              }
+                              request.push(byte[0]);
+                          }
+                          receipt.request = request.starts_with(b"GET /rustls-proof HTTP/1.1\r\n")
+                              && request.ends_with(b"\r\n\r\n");
+                          if receipt.request {
+                              receipt.exchange = stream
+                                  .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                                  .and_then(|_| stream.flush())
+                                  .is_ok();
+                          }
+                      }
+                      receipt
+                  });
+                  (port, thread)
+              }
+              fn finish(name: &str, thread: thread::JoinHandle<Receipt>, success: bool) {
+                  let receipt = thread.join().expect("owned TLS server joined");
+                  assert!(
+                      receipt.accepted,
+                      "server did not receive the connection: {receipt:?}"
+                  );
+                  if success {
+                      assert!(
+                          receipt.tls13 && receipt.request && receipt.exchange,
+                          "incomplete TLS application exchange: {receipt:?}"
+                      );
+                  } else {
+                      assert!(
+                          !receipt.request && !receipt.exchange,
+                          "rejected client reached application protocol: {receipt:?}"
+                      );
+                  }
+                  println!(
+                      "TLS_RECEIPT {name} accepted={} tls13={} request={} exchange={} joined=true",
+                      receipt.accepted, receipt.tls13, receipt.request, receipt.exchange
+                  );
+              }
+              async fn wss(name: &str, pin: Option<String>, success: bool) {
+                  let (port, thread) = server(true);
+                  let config = GatewayWsConfig::new(
+                      format!("wss://127.0.0.1:{port}/rustls-proof"),
+                      None,
+                      None,
+                      pin,
+                      GatewayOwnership::Remote,
+                  );
+                  let expected_refusal = if config.tls_fingerprint.is_some() {
+                      RustlsError::General(TLS_PIN_MISMATCH_ERROR.to_owned())
+                  } else {
+                      RustlsError::InvalidCertificate(rustls::CertificateError::UnknownIssuer)
+                  };
+                  let result = tokio::time::timeout(Duration::from_secs(10), connect_gateway_socket(&config))
+                      .await
+                      .expect("WSS deadline");
+                  match result {
+                      Ok(mut socket) => {
+                          assert!(success, "untrusted WSS connection succeeded");
+                          let message = tokio::time::timeout(Duration::from_secs(5), socket.next())
+                              .await
+                              .unwrap()
+                              .unwrap()
+                              .unwrap();
+                          assert!(matches!(message, Message::Text(value) if value == "rustls-proof-server"));
+                          socket
+                              .send(Message::Text("rustls-proof-client".into()))
+                              .await
+                              .unwrap();
+                      }
+                      Err(error) => {
+                          assert!(
+                              !success && error.tls_failure,
+                              "expected classified TLS refusal"
+                          );
+                          // The owner preserves tungstenite's IO/Rustls display in RequestFailure.
+                          let expected = TungsteniteError::Io(std::io::Error::new(
+                              ErrorKind::InvalidData,
+                              expected_refusal,
+                          ));
+                          assert_eq!(
+                              error.message,
+                              format!("Gateway connection failed: {expected}")
+                          );
+                      }
+                  }
+                  finish(name, thread, success);
+              }
+              fn is_unknown_issuer(error: &(dyn std::error::Error + 'static)) -> bool {
+                  let mut current = Some(error);
+                  while let Some(error) = current {
+                      if matches!(
+                          error.downcast_ref::<RustlsError>(),
+                          Some(RustlsError::InvalidCertificate(
+                              rustls::CertificateError::UnknownIssuer
+                          ))
+                      ) {
+                          return true;
+                      }
+                      current = if let Some(error) = error.downcast_ref::<std::io::Error>() {
+                          error
+                              .get_ref()
+                              .map(|inner| inner as &(dyn std::error::Error + 'static))
+                      } else {
+                          error.source()
+                      };
+                  }
+                  false
+              }
+              async fn updater(name: &str, success: bool) {
+                  let (port, thread) = server(false);
+                  let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+                  context
+                      .config_mut()
+                      .plugins
+                      .0
+                      .insert("updater".into(), json!({"pubkey":""}));
+                  let app = tauri::test::mock_builder()
+                      .plugin(tauri_plugin_updater::Builder::new().build())
+                      .build(context)
+                      .unwrap();
+                  let updater = app
+                      .updater_builder()
+                      .endpoints(vec![format!("https://127.0.0.1:{port}/rustls-proof")
+                          .parse()
+                          .unwrap()])
+                      .unwrap()
+                      .timeout(Duration::from_secs(10))
+                      .no_proxy()
+                      .build()
+                      .unwrap();
+                  let result = updater.check().await;
+                  if success {
+                      assert!(
+                          matches!(result, Ok(None)),
+                          "trusted updater HTTPS check failed"
+                      );
+                  } else {
+                      let error = match result {
+                          Err(tauri_plugin_updater::Error::Reqwest(error)) => error,
+                          Err(error) => panic!("expected certificate rejection from Reqwest: {error:?}"),
+                          Ok(_) => panic!("untrusted updater HTTPS check succeeded"),
+                      };
+                      assert!(
+                          !error.is_timeout(),
+                          "request timeout is not certificate refusal"
+                      );
+                      assert!(
+                          is_unknown_issuer(&error),
+                          "expected Rustls UnknownIssuer: {error:?}"
+                      );
+                  }
+                  finish(name, thread, success);
+              }
+              #[tokio::test]
+              async fn wss_root_trusted() {
+                  wss("wss_root_trusted", None, true).await;
+              }
+              #[tokio::test]
+              async fn wss_root_untrusted() {
+                  wss("wss_root_untrusted", None, false).await;
+              }
+              #[tokio::test]
+              async fn wss_pin_valid() {
+                  wss(
+                      "wss_pin_valid",
+                      Some(format!("{:x}", Sha256::digest(decode(LEAF)))),
+                      true,
+                  )
+                  .await;
+              }
+              #[tokio::test]
+              async fn wss_pin_wrong() {
+                  wss("wss_pin_wrong", Some("00".repeat(32)), false).await;
+              }
+              #[tokio::test]
+              async fn updater_https_trusted() {
+                  updater("updater_https_trusted", true).await;
+              }
+              #[tokio::test]
+              async fn updater_https_untrusted() {
+                  updater("updater_https_untrusted", false).await;
+              }
+          }
+          '''
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+
+          def verify():
+              assert git("rev-parse", "HEAD") == HEAD
+              assert git("rev-parse", "HEAD^{tree}") == TREE
+              assert not git("status", "--porcelain", "--untracked-files=no")
+              for name, expected in PINS.items():
+                  assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == expected, name
+
+          def run(command, *, timeout, env=None):
+              process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env, start_new_session=True)
+              try:
+                  output, _ = process.communicate(timeout=timeout)
+              except BaseException:
+                  if process.poll() is None:
+                      try:
+                          os.killpg(process.pid, signal.SIGTERM)
+                      except ProcessLookupError:
+                          pass
+                  try:
+                      output, _ = process.communicate(timeout=5)
+                  except subprocess.TimeoutExpired:
+                      os.killpg(process.pid, signal.SIGKILL)
+                      output, _ = process.communicate()
+                  print(output, end="", flush=True)
+                  raise
+              return process.returncode, output
+
+          def pem(der):
+              return "-----BEGIN CERTIFICATE-----\n" + "\n".join(textwrap.wrap(der, 64)) + "\n-----END CERTIFICATE-----\n"
+
+          def main():
+              assert sys.platform.startswith("linux"), "prepared Linux host required; do not run local builds"
+              verify()
+              for command in (["cargo", "+stable", "--version"], ["rustc", "+stable", "--version"]):
+                  subprocess.run(command, check=True)
+              original = Path(OWNER).read_bytes()
+              module = RUST.replace("__LEAF__", CERTS["leaf"]).replace("__KEY__", CERTS["key"])
+              print(json.dumps({"source": HEAD, "tree": TREE, "pins": PINS, "module_sha256": hashlib.sha256(module.encode()).hexdigest(), "platform": sys.platform, "arch": platform.machine(), "cpus": os.cpu_count()}), flush=True)
+              def interrupted(*_):
+                  raise KeyboardInterrupt()
+              signal.signal(signal.SIGTERM, interrupted)
+              try:
+                  Path(OWNER).write_bytes(original + module.encode())
+                  code, output = run(["cargo", "+stable", "test", "--locked", "--manifest-path", "apps/linux/src-tauri/Cargo.toml", "--bin", "openclaw-desktop", "--features", "tauri/test", "--no-run", "--message-format=json"], timeout=1800)
+                  binaries = set()
+                  for line in output.splitlines():
+                      try:
+                          event = json.loads(line)
+                      except json.JSONDecodeError:
+                          print(line)
+                          continue
+                      if event.get("reason") == "compiler-message":
+                          print(event["message"].get("rendered", ""), end="")
+                      if event.get("reason") == "compiler-artifact" and event.get("profile", {}).get("test") and event.get("target", {}).get("name") == "openclaw-desktop" and event.get("executable"):
+                          binaries.add(event["executable"])
+                  assert code == 0 and len(binaries) == 1, "native proof build failed or ambiguous executable"
+                  binary = binaries.pop()
+                  print("test_binary_sha256", hashlib.sha256(Path(binary).read_bytes()).hexdigest(), flush=True)
+                  assert git("diff", "--name-only") == OWNER
+                  assert Path(OWNER).read_bytes() == original + module.encode()
+                  assert hashlib.sha256(Path("apps/linux/src-tauri/Cargo.lock").read_bytes()).hexdigest() == PINS["apps/linux/src-tauri/Cargo.lock"]
+                  cases = [("wss_root_trusted", "ca"), ("wss_root_untrusted", "other_ca"), ("wss_pin_valid", "other_ca"), ("wss_pin_wrong", "ca"), ("updater_https_trusted", "ca"), ("updater_https_untrusted", "other_ca")]
+                  with tempfile.TemporaryDirectory(prefix="openclaw-rustls-proof-") as temporary:
+                      directory = Path(temporary)
+                      (directory / "empty").mkdir()
+                      for name in ("ca", "other_ca"):
+                          (directory / (name + ".pem")).write_text(pem(CERTS[name]))
+                      for name, ca in cases:
+                          env = os.environ.copy()
+                          env.update(SSL_CERT_FILE=str(directory / (ca + ".pem")), SSL_CERT_DIR=str(directory / "empty"))
+                          test = "gateway_ws::rustls_security_proof::" + name
+                          print("CASE", name, flush=True)
+                          code, output = run([binary, "--exact", test, "--nocapture", "--test-threads=1"], timeout=90, env=env)
+                          print(output, end="", flush=True)
+                          assert code == 0 and "1 passed; 0 failed; 0 ignored" in output
+                          assert output.count("TLS_RECEIPT " + name + " ") == 1 and "joined=true" in output
+                          print("PASS", name, flush=True)
+              finally:
+                  Path(OWNER).write_bytes(original)
+                  verify()
+                  print("source-restored", HEAD, "temporary-fixtures-removed", flush=True)
+              print("TLS_PROOF 6 passed; private-CA loader and updater-check only", flush=True)
+
+          if __name__ == "__main__":
+              main()
+          PY_PROOF
+          printf '623f254bcf43eaaffd390309de42cd5a1044f8645ba98831103e95cb8a93e61e  %s\n' "$RUNNER_TEMP/desktop-rustls-proof.py" | sha256sum --check
+          python3 "$RUNNER_TEMP/desktop-rustls-proof.py"
 
       - name: Build native inline browser candidate
         working-directory: apps/linux/src-tauri
@@ -277,6 +673,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: 81637ca5a74be1acb5715279b8ed305fa1c08d34
           fetch-depth: 1
           fetch-tags: false
           persist-credentials: false
