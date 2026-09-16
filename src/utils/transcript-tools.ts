@@ -1,5 +1,5 @@
 import {
-  normalizeOptionalLowercaseString,
+  normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 
@@ -11,9 +11,8 @@ type ToolResultCounts = {
 const TOOL_CALL_TYPES = new Set(["tool_use", "toolcall", "tool_call"]);
 const TOOL_RESULT_TYPES = new Set(["tool_result", "tool_result_error"]);
 
-const normalizeType = (value: unknown): string => {
-  return typeof value === "string" ? (normalizeOptionalLowercaseString(value) ?? "") : "";
-};
+export const isToolCallContentType = (type: unknown): boolean =>
+  TOOL_CALL_TYPES.has(normalizeLowercaseStringOrEmpty(type));
 
 /** Preserves call occurrences; a top-level legacy name can mirror the first matching block. */
 export const extractToolCallNames = (message: Record<string, unknown>): string[] => {
@@ -31,8 +30,7 @@ export const extractToolCallNames = (message: Record<string, unknown>): string[]
       continue;
     }
     const block = entry as Record<string, unknown>;
-    const type = normalizeType(block.type);
-    if (!TOOL_CALL_TYPES.has(type)) {
+    if (!isToolCallContentType(block.type)) {
       continue;
     }
     const name = normalizeOptionalString(block.name);
@@ -60,7 +58,7 @@ export const countToolResults = (message: Record<string, unknown>): ToolResultCo
       continue;
     }
     const block = entry as Record<string, unknown>;
-    const type = normalizeType(block.type);
+    const type = normalizeLowercaseStringOrEmpty(block.type);
     if (!TOOL_RESULT_TYPES.has(type)) {
       continue;
     }

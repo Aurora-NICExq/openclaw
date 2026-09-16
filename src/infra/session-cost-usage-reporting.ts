@@ -8,6 +8,7 @@ import { isPrimarySessionTranscriptFileName } from "../config/sessions/artifacts
 import { parseSqliteSessionFileMarker } from "../config/sessions/legacy-sqlite-marker.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { isToolCallContentType } from "../utils/transcript-tools.js";
 import {
   isUsageCostRollupFresh,
   readUsageCostRollups,
@@ -318,7 +319,7 @@ export async function loadSessionLogs(params: {
             if (b.type === "text" && typeof b.text === "string") {
               return b.text;
             }
-            if (b.type === "tool_use") {
+            if (isToolCallContentType(b.type)) {
               const name = typeof b.name === "string" ? b.name : "unknown";
               return `[Tool: ${name}]`;
             }
