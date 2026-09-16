@@ -271,12 +271,15 @@ export function createCodexLifecycleTurnHarness(
 }
 
 export async function createLeasedCodexLifecycleHarness(
-  options: Parameters<typeof createCodexLifecycleHarness>[0] & { agentDir: string },
+  options: Parameters<typeof createCodexLifecycleHarness>[0] & {
+    agentDir: string;
+    startOptions?: CodexAppServerClientOptions["startOptions"];
+  },
 ) {
   const harness = createCodexLifecycleHarness(options);
   const start = vi.spyOn(CodexAppServerClient, "start").mockResolvedValueOnce(harness.client);
   const acquireOptions: CodexAppServerClientOptions = {
-    startOptions: {
+    startOptions: options.startOptions ?? {
       transport: "stdio",
       command: process.execPath,
       args: ["app-server"],

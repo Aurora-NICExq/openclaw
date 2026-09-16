@@ -652,6 +652,153 @@ async function createLeasedLifecycleWireClient(
 }
 
 describe("Codex app-server thread lifecycle bindings", () => {
+  it.each(
+    ["websocket", "unix", "proxy"].flatMap((transport) =>
+      ["replacement policy", ""].map((developerInstructions) => ({
+        transport,
+        developerInstructions,
+      })),
+    ),
+  )(
+    "refreshes $transport policy in a fresh thread: $developerInstructions",
+    async ({ transport, developerInstructions }) => {
+      const sessionFile = path.join(tempDir, "remote-policy.jsonl");
+      const workspaceDir = path.join(tempDir, "workspace");
+      const appServer = createThreadLifecycleAppServerOptions();
+      const startOptions = {
+        ...appServer.start,
+        transport: transport === "proxy" ? ("stdio" as const) : (transport as "websocket" | "unix"),
+        args: transport === "proxy" ? ["app-server", "proxy"] : ["app-server"],
+        url: transport === "unix" ? "unix:///tmp/codex-test.sock" : "ws://127.0.0.1:8123",
+      };
+      let starts = 0;
+      const fixture = await createLeasedCodexLifecycleHarness({
+        agentDir: path.join(tempDir, "agent"),
+        startOptions,
+        respond: (method) => {
+          if (method === "config/read") return { config: {}, origins: {}, layers: [] };
+          if (method === "configRequirements/read") return { requirements: null };
+          if (method === "thread/start") return threadStartResult(`remote-${++starts}`);
+          throw new Error(`unexpected method: ${method}`);
+        },
+      });
+      const common = {
+        client: fixture.client,
+        params: createParams(sessionFile, workspaceDir),
+        cwd: workspaceDir,
+        dynamicTools: [],
+        // Physical start metadata, including redirected/proxied stdio, owns this decision.
+        appServer,
+        userMcpServersEnabled: false,
+        developerInstructions: "initial policy",
+      };
+      const first = await startOrResumeThread(common);
+      await retainCodexAppServerLiveThread(
+        fixture.client,
+        first.threadId,
+        undefined,
+        first.liveThreadConfigFingerprint,
+      );
+      const reused = await startOrResumeThread(common);
+      expect(reused.threadId).toBe(first.threadId);
+      await retainCodexAppServerLiveThread(
+        fixture.client,
+        reused.threadId,
+        reused.liveThreadOwnership?.release,
+        reused.liveThreadConfigFingerprint,
+      );
+
+      const refreshed = await startOrResumeThread({ ...common, developerInstructions });
+
+      expect(refreshed).toMatchObject({ threadId: "remote-2", lifecycle: { action: "started" } });
+      expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({ threadId: "remote-2" });
+      const threadRequests = fixture.request.mock.calls.filter(([method]) =>
+        method.startsWith("thread/"),
+      );
+      expect(threadRequests.map(([method]) => method)).toEqual([
+        "thread/start",
+        "thread/read",
+        "thread/start",
+        "thread/unsubscribe",
+      ]);
+      expect(threadRequests[2]?.[1]).toMatchObject({ developerInstructions });
+      expect(threadRequests[3]?.[1]).toMatchObject({ threadId: first.threadId });
+      expect(
+        await fixture.client.request("thread/read", {
+          threadId: first.threadId,
+          includeTurns: false,
+        }),
+      ).toMatchObject({ thread: { id: first.threadId } });
+    },
+  );
+
+  it.each(["none", "active", "start failure", "binding conflict"] as const)(
+    "preserves remote cold-resume ownership through replacement: %s",
+    async (fault) => {
+      const sessionFile = path.join(tempDir, "remote-cold.jsonl");
+      const workspaceDir = path.join(tempDir, "workspace");
+      const appServer = createThreadLifecycleAppServerOptions();
+      let starts = 0;
+      const fixture = await createLeasedCodexLifecycleHarness({
+        agentDir: path.join(tempDir, "agent"),
+        startOptions: { ...appServer.start, transport: "websocket", url: "ws://127.0.0.1:8123" },
+        respond: (method) => {
+          if (method === "config/read") return { config: {}, origins: {}, layers: [] };
+          if (method === "configRequirements/read") return { requirements: null };
+          if (method === "thread/archive") return {};
+          if (method === "thread/start") {
+            starts++;
+            if (starts === 2 && fault === "start failure") throw new Error("remote startup failed");
+            return threadStartResult(`cold-${starts}`);
+          }
+          throw new Error(`unexpected method: ${method}`);
+        },
+      });
+      const common = {
+        client: fixture.client,
+        params: createParams(sessionFile, workspaceDir),
+        cwd: workspaceDir,
+        dynamicTools: [],
+        appServer,
+        userMcpServersEnabled: false,
+        developerInstructions: "current policy",
+      };
+      const first = await startOrResumeThread(common);
+      const before = await readCodexAppServerBinding(sessionFile);
+      if (fault === "active") {
+        const response = threadStartResult(first.threadId);
+        response.thread.status = { type: "active", activeFlags: [] };
+        fixture.seed(response, { loaded: true, subscribed: true });
+      }
+      if (fault === "binding conflict") {
+        vi.spyOn(testCodexAppServerBindingStore, "mutate").mockResolvedValueOnce(false);
+      }
+      const replacement = startOrResumeThread(common);
+      if (fault === "none") {
+        await expect(replacement).resolves.toMatchObject({
+          threadId: "cold-2",
+          lifecycle: { action: "started" },
+        });
+        expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({ threadId: "cold-2" });
+      } else {
+        await expect(replacement).rejects.toThrow(
+          fault === "active"
+            ? "active"
+            : fault === "start failure"
+              ? "remote startup failed"
+              : "committing a fresh thread",
+        );
+        expect(await readCodexAppServerBinding(sessionFile)).toEqual(before);
+      }
+      expect(
+        await fixture.client.request("thread/read", {
+          threadId: first.threadId,
+          includeTurns: false,
+        }),
+      ).toMatchObject({ thread: { id: first.threadId } });
+    },
+  );
+
   it("inherits the effective native project-document budget", async () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const workspaceDir = path.join(tempDir, "workspace");

@@ -21,6 +21,7 @@ import {
   type CodexAppServerPendingSupervisionBranch,
   type CodexAppServerThreadBinding,
 } from "./session-binding.js";
+import { canRefreshCodexAppServerThreadInPlace } from "./shared-client.js";
 import {
   isTransientWebSearchRestriction,
   shouldRecheckRecoverablePluginBinding,
@@ -36,6 +37,7 @@ import {
 import {
   resumePendingCodexThread,
   prepareCodexThreadResume,
+  prepareCodexThreadReplacement,
   withCodexThreadLifecycleBinding,
 } from "./thread-lifecycle-adoption.js";
 import { CodexThreadBindingConflictError } from "./thread-lifecycle-errors.js";
@@ -682,6 +684,26 @@ export async function startOrResumeThread(
               ? "rotating an unavailable ephemeral thread binding"
               : "rotating a stale plugin app binding",
           );
+        } else if (
+          binding.connectionScope !== "supervision" &&
+          !binding.preserveNativeModel &&
+          !canRefreshCodexAppServerThreadInPlace(params.client)
+        ) {
+          assertCodexBindingMayBeReplaced(
+            binding,
+            "refreshing remote thread configuration",
+            expectedOwnership,
+          );
+          params.assertCurrent = await prepareCodexThreadReplacement(
+            params,
+            binding,
+            requestContext,
+          );
+          // Remote resume can acknowledge ignored overrides. Start with the current
+          // policy instead, preserving the predecessor through the binding commit.
+          // The normal fresh-thread projection restores the OpenClaw conversation.
+          replacementPredecessor = binding;
+          binding = undefined;
         } else {
           const resumeBinding = binding;
           const resumed = await resumeExistingCodexThread(params, {

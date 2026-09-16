@@ -1335,6 +1335,12 @@ export function retainSharedCodexAppServerClientByInstanceId(
   return undefined;
 }
 
+/** In-place configuration refresh requires ownership of the native process. */
+export function canRefreshCodexAppServerThreadInPlace(client: CodexAppServerClient): boolean {
+  const start = getSharedCodexAppServerClientState().startMetadata.get(client)?.startOptions;
+  return start?.transport === "stdio" && !isCodexAppServerProxyLaunch(start.args);
+}
+
 /** Captures physical ownership, independently of unrelated thread and reader leases. */
 export function captureCodexAppServerClientLifetime(
   client: CodexAppServerClient,
@@ -1343,11 +1349,7 @@ export function captureCodexAppServerClientLifetime(
   const state = getSharedCodexAppServerClientState();
   // Ordinary refresh needs a process, not a connection to an external server.
   // Supervision/release require only their original registered connection.
-  const start = state.startMetadata.get(client)?.startOptions;
-  if (
-    requiredOwnership === "native-process" &&
-    (start?.transport !== "stdio" || isCodexAppServerProxyLaunch(start.args))
-  ) {
+  if (requiredOwnership === "native-process" && !canRefreshCodexAppServerThreadInPlace(client)) {
     throw new AgentHarnessPreflightError(
       "Codex ordinary configuration refresh requires an OpenClaw-managed local stdio process, not an external socket or app-server proxy. No turn was sent; reconnect through managed local stdio before continuing.",
     );
