@@ -203,12 +203,13 @@ it.each([
     const input = queued[0]!.prepare();
     expect(input.target.transcript.sessionId).toBe("history-worker");
     expect(input.target.entryValidationKey).toBe(validate ? key : undefined);
-    expect(input.target.database).toEqual({
+    expect(input.database).toEqual({
       agentId: "main",
       path: expect.stringMatching(/openclaw-agent\.sqlite$/),
     });
+    expect(input.target).not.toHaveProperty("database");
     expect(input.target).not.toHaveProperty("env");
-    expect(runWorker.mock.calls[0]![1]).toBe(JSON.stringify(input).length * 2);
+    expect(runWorker.mock.calls[0]![1]).toBe(`1:${JSON.stringify(input)}`.length * 2);
     queued[0]!.result.resolve(page("requested transcript"));
     await pending;
   },
@@ -238,7 +239,7 @@ it.each([{ limit: 2 }, { cursor: "7" }, { maxChars: 20 }])(
     expect(queued).toHaveLength(2);
     for (const [index, job] of queued.entries()) {
       const input = job.prepare();
-      expect(runWorker.mock.calls[index]![1]).toBe(JSON.stringify(input).length * 2);
+      expect(runWorker.mock.calls[index]![1]).toBe(`1:${JSON.stringify(input)}`.length * 2);
       job.result.resolve({
         kind: "http",
         snapshot: {
