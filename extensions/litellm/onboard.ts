@@ -41,8 +41,9 @@ export const { applyConfig: applyLitellmConfig, applyProviderConfig: applyLitell
         providerId: "litellm",
         api: "openai-completions" as const,
         baseUrl: resolvedBaseUrl || LITELLM_BASE_URL,
-        // An explicit proxy owns its model inventory; a seed would constrain live discovery.
-        defaultModels: resolvedBaseUrl ? [] : [buildLitellmModelDefinition()],
+        // Replace mode disables discovery, so it still needs the configured default.
+        defaultModels:
+          resolvedBaseUrl && cfg.models?.mode !== "replace" ? [] : [buildLitellmModelDefinition()],
         defaultModelId: LITELLM_DEFAULT_MODEL_ID,
         aliases: [{ modelRef: LITELLM_DEFAULT_MODEL_REF, alias: "LiteLLM" }],
       };

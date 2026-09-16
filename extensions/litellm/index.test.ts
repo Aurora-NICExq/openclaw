@@ -43,12 +43,18 @@ describe("litellm plugin", () => {
     clearLiveCatalogCacheForTests();
   });
 
-  it.each(["non-interactive", "interactive"] as const)(
-    "preserves an explicit proxy's authored models through registered %s auth",
-    async (mode) => {
+  it.each([
+    { authMode: "non-interactive", modelsMode: "merge" },
+    { authMode: "interactive", modelsMode: "merge" },
+    { authMode: "non-interactive", modelsMode: "replace" },
+    { authMode: "interactive", modelsMode: "replace" },
+  ] as const)(
+    "preserves an explicit proxy's authored models through registered $authMode auth in $modelsMode mode",
+    async ({ authMode, modelsMode }) => {
       const auth = registerProvider()?.auth?.[0];
       const config = {
         models: {
+          mode: modelsMode,
           providers: {
             litellm: {
               baseUrl: "https://litellm.example/v1",
@@ -70,7 +76,7 @@ describe("litellm plugin", () => {
         },
       } satisfies OpenClawConfig;
       let result: OpenClawConfig | null | undefined;
-      if (mode === "non-interactive") {
+      if (authMode === "non-interactive") {
         result = await auth?.runNonInteractive?.({
           authChoice: "litellm-api-key",
           config,
@@ -107,11 +113,15 @@ describe("litellm plugin", () => {
         result = interactive?.configPatch;
       }
 
+      expect(result?.models?.mode).toBe(modelsMode);
       expect(result?.models?.providers?.litellm).toEqual({
         baseUrl: "https://litellm.example/v1",
         api: "openai-completions",
         apiKey: "old-key",
-        models: config.models?.providers?.litellm.models,
+        models: [
+          ...config.models.providers.litellm.models,
+          ...(modelsMode === "replace" ? [LITELLM_DEFAULT_MODEL] : []),
+        ],
       });
     },
   );
@@ -173,20 +183,29 @@ describe("litellm plugin", () => {
 
   it.each([
     {
+      modelsMode: undefined,
       baseUrl: "https://litellm.example/v1/",
       expectedBaseUrl: "https://litellm.example/v1",
       expectedModels: [],
     },
     {
+      modelsMode: undefined,
       baseUrl: undefined,
       expectedBaseUrl: "http://localhost:4000",
       expectedModels: [LITELLM_DEFAULT_MODEL],
     },
+    {
+      modelsMode: "replace" as const,
+      baseUrl: "https://litellm.example/v1/",
+      expectedBaseUrl: "https://litellm.example/v1",
+      expectedModels: [LITELLM_DEFAULT_MODEL],
+    },
   ])(
-    "configures model discovery for proxy URL $baseUrl",
-    async ({ baseUrl, expectedBaseUrl, expectedModels }) => {
+    "configures proxy URL $baseUrl in $modelsMode mode",
+    async ({ modelsMode, baseUrl, expectedBaseUrl, expectedModels }) => {
       const provider = registerProvider();
       const auth = provider?.auth?.[0];
+      const config = (modelsMode ? { models: { mode: modelsMode } } : {}) satisfies OpenClawConfig;
       const agentDir = mkdtempSync(join(tmpdir(), "openclaw-litellm-auth-"));
       const resolveApiKey = vi.fn(async () => ({
         key: "litellm-test-key",
@@ -201,8 +220,8 @@ describe("litellm plugin", () => {
       try {
         const result = await auth?.runNonInteractive?.({
           authChoice: "litellm-api-key",
-          config: {},
-          baseConfig: {},
+          config,
+          baseConfig: config,
           opts: {
             litellmApiKey: "litellm-test-key",
             customBaseUrl: baseUrl,
@@ -235,7 +254,7 @@ describe("litellm plugin", () => {
             },
           },
           models: {
-            mode: "merge",
+            mode: modelsMode ?? "merge",
             providers: {
               litellm: {
                 baseUrl: expectedBaseUrl,
