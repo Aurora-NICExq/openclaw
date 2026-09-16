@@ -1,7 +1,10 @@
 // Verifies plain-text sanitization strips runtime scaffolding, tool-call blocks,
 // prompt-data wrappers, and conservative HTML markup.
 import { describe, expect, it } from "vitest";
-import { escapeInternalRuntimeContextDelimiters } from "../../agents/internal-runtime-context.js";
+import {
+  escapeInternalRuntimeContextDelimiters,
+  OPENCLAW_RUNTIME_CONTEXT_NOTICE,
+} from "../../agents/internal-runtime-context.js";
 import { stripInternalRuntimeScaffoldingFromPayload } from "./deliver-payload.js";
 import { stripInternalRuntimeScaffolding } from "./protocol-scaffolding.js";
 import { sanitizeForPlainText } from "./sanitize-text.js";
@@ -425,6 +428,14 @@ describe("stripInternalRuntimeScaffolding", () => {
     expect(stripInternalRuntimeScaffolding("<note>keep this</note>")).toBe(
       "<note>keep this</note>",
     );
+  });
+
+  it("removes runtime context prefaces without angle markers", () => {
+    expect(
+      stripInternalRuntimeScaffolding(
+        ["OpenClaw runtime event.", OPENCLAW_RUNTIME_CONTEXT_NOTICE, "Visible reply"].join("\n"),
+      ),
+    ).toBe("Visible reply");
   });
 
   it("removes internal runtime context blocks", () => {
