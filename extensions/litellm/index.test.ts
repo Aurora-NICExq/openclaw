@@ -2,8 +2,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   capturePluginRegistration,
+  createTestWizardPrompter,
   registerProviderPlugin,
   requireRegisteredProvider,
   runProviderCatalog,
@@ -40,6 +42,79 @@ describe("litellm plugin", () => {
     vi.unstubAllGlobals();
     clearLiveCatalogCacheForTests();
   });
+
+  it.each(["non-interactive", "interactive"] as const)(
+    "preserves an explicit proxy's authored models through registered %s auth",
+    async (mode) => {
+      const auth = registerProvider()?.auth?.[0];
+      const config: OpenClawConfig = {
+        models: {
+          providers: {
+            litellm: {
+              baseUrl: "https://litellm.example/v1",
+              api: "anthropic-messages",
+              apiKey: "  old-key  ",
+              models: [
+                {
+                  id: "custom-model",
+                  name: "Custom",
+                  reasoning: false,
+                  input: ["text"],
+                  cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow: 1000,
+                  maxTokens: 100,
+                },
+              ],
+            },
+          },
+        },
+      };
+      let result: OpenClawConfig | null | undefined;
+      if (mode === "non-interactive") {
+        result = await auth?.runNonInteractive?.({
+          authChoice: "litellm-api-key",
+          config,
+          baseConfig: config,
+          opts: { customBaseUrl: "https://litellm.example/v1/" },
+          runtime: createRuntimeSpies(),
+          resolveApiKey: async () => ({ key: "old-key", source: "profile" }),
+          toApiKeyCredential: () => null,
+        });
+      } else {
+        const interactive = await auth?.run({
+          config,
+          opts: { litellmApiKey: "old-key" },
+          env: {},
+          runtime: createRuntimeSpies(),
+          prompter: createTestWizardPrompter(),
+          secretInputMode: "plaintext",
+          isRemote: false,
+          openUrl: async () => {
+            throw new Error("Unexpected browser auth");
+          },
+          oauth: {
+            createVpsAwareHandlers: () => {
+              throw new Error("Unexpected OAuth");
+            },
+          },
+        });
+        expect(interactive?.profiles).toEqual([
+          {
+            profileId: "litellm:default",
+            credential: { type: "api_key", provider: "litellm", key: "old-key" },
+          },
+        ]);
+        result = interactive?.configPatch;
+      }
+
+      expect(result?.models?.providers?.litellm).toEqual({
+        baseUrl: "https://litellm.example/v1",
+        api: "openai-completions",
+        apiKey: "old-key",
+        models: config.models?.providers?.litellm.models,
+      });
+    },
+  );
 
   it.each([
     {
