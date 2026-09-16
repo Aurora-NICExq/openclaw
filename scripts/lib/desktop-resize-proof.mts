@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstat, mkdir, readFile, readdir, stat as fsStat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, stat as fsStat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
@@ -131,39 +131,71 @@ function desktopNodeStreamCloses(value: unknown) {
   });
 }
 
-/** Read only the fixture-owned log before node cleanup removes it. */
-export async function readDesktopProofNodeStreamCloses(file: string) {
+/** Read at most 1 MiB, including when a live fixture log grows after admission. */
+async function readDesktopProofLog(file: string) {
   try {
     const stat = await lstat(file);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) {
       return null;
     }
-    const events: unknown[] = [];
-    for (const line of (await readFile(file, "utf8")).split("\n")) {
-      if (!line.trim()) {
-        continue;
+    const handle = await open(file, "r");
+    let text: string;
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.ino !== stat.ino || opened.dev !== stat.dev) {
+        return null;
       }
-      let record: unknown;
-      try {
-        record = JSON.parse(line);
-      } catch {
-        // An in-progress final log write is not a completed lifecycle record.
-        continue;
+      const buffer = Buffer.alloc(1024 * 1024);
+      let bytes = 0;
+      while (bytes < buffer.length) {
+        const result = await handle.read(buffer, bytes, buffer.length - bytes, null);
+        if (result.bytesRead === 0) {
+          break;
+        }
+        bytes += result.bytesRead;
       }
-      if (
-        !isRecord(record) ||
-        record["0"] !== '{"subsystem":"node-host/stream"}' ||
-        record["2"] !== "node stream closed" ||
-        !isRecord(record["1"]) ||
-        record["1"].streamKind !== "desktop"
-      ) {
-        continue;
+      if ((await handle.stat()).size > buffer.length) {
+        return null;
       }
-      events.push(record["1"]);
+      text = buffer.toString("utf8", 0, bytes);
+    } finally {
+      await handle.close();
     }
-    return desktopNodeStreamCloses(events.slice(-8));
+    return text.split("\n").flatMap((line): unknown[] => {
+      try {
+        return [JSON.parse(line)];
+      } catch {
+        // An in-progress final write is not a completed lifecycle record.
+        return [];
+      }
+    });
   } catch {
     // Diagnostic collection must not replace the framebuffer assertion failure.
+    return null;
+  }
+}
+
+/** Preserve the existing node projection while sharing the actual-byte read bound. */
+export async function readDesktopProofNodeStreamCloses(file: string) {
+  const records = await readDesktopProofLog(file);
+  if (!records) {
+    return null;
+  }
+  try {
+    return desktopNodeStreamCloses(
+      records
+        .flatMap((record) =>
+          isRecord(record) &&
+          record["0"] === '{"subsystem":"node-host/stream"}' &&
+          record["2"] === "node stream closed" &&
+          isRecord(record["1"]) &&
+          record["1"].streamKind === "desktop"
+            ? [record["1"]]
+            : [],
+        )
+        .slice(-8),
+    );
+  } catch {
     return null;
   }
 }

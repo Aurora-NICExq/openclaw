@@ -1,7 +1,10 @@
 import { execFileSync } from "node:child_process";
 import {
+  appendFile,
   chmod,
+  lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   rename,
@@ -10,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, expectTypeOf, it } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   type DesktopProofSourceStatus,
   desktopProofAssets,
@@ -30,6 +33,11 @@ import {
 } from "../../scripts/lib/desktop-resize-proof.mts";
 import { hasUnjoinedWork } from "../../scripts/lib/managed-child-process.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, lstat: vi.fn(actual.lstat), open: vi.fn(actual.open) };
+});
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 const head = "a".repeat(40);
@@ -184,6 +192,57 @@ describe("desktop proof identity and public evidence", () => {
     const link = path.join(root, "linked.log");
     await symlink(file, link);
     expect(await readDesktopProofNodeStreamCloses(link)).toBeNull();
+  });
+
+  it("accepts exactly 1 MiB of node diagnostics and retains the last eight closes", async () => {
+    const file = path.join(dirs.make("desktop-node-log-limit-"), "node.log");
+    const records = Array.from({ length: 10 }, (_, index) =>
+      JSON.stringify({
+        "0": '{"subsystem":"node-host/stream"}',
+        "1": { streamKind: "desktop", trigger: "target-close", closeCode: 1000 + index },
+        "2": "node stream closed",
+      }),
+    ).join("\n");
+    await writeFile(file, records.padEnd(1024 * 1024, " "));
+    expect(await readDesktopProofNodeStreamCloses(file)).toEqual(
+      Array.from({ length: 8 }, (_, index) => ({
+        trigger: "target-close",
+        closeCode: 1002 + index,
+      })),
+    );
+  });
+
+  it("bounds a node log that grows after admission and closes the read handle", async () => {
+    const file = path.join(dirs.make("desktop-node-log-growth-"), "node.log");
+    await writeFile(file, "{}\n");
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const handle = await actual.open(file, "r");
+    const read = vi.spyOn(handle, "read");
+    const close = vi.spyOn(handle, "close");
+    vi.mocked(lstat).mockImplementationOnce(async () => {
+      const admitted = await actual.lstat(file);
+      await appendFile(file, Buffer.alloc(1024 * 1024, 32));
+      return admitted;
+    });
+    vi.mocked(open).mockResolvedValueOnce(handle);
+    try {
+      expect(await readDesktopProofNodeStreamCloses(file)).toBeNull();
+      expect(read).toHaveBeenCalled();
+      let actualBytes = 0;
+      for (const result of read.mock.results) {
+        if (result.type === "return") {
+          actualBytes += (await result.value).bytesRead;
+        }
+      }
+      expect(actualBytes).toBeLessThanOrEqual(1024 * 1024);
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.mocked(lstat).mockImplementation(actual.lstat);
+      vi.mocked(open).mockImplementation(actual.open);
+      read.mockRestore();
+      close.mockRestore();
+      await handle.close();
+    }
   });
 
   it("keeps the UI phase contract narrower than arbitrary reporter strings", () => {
