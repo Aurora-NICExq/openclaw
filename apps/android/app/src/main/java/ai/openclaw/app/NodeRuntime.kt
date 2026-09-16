@@ -6228,8 +6228,8 @@ class NodeRuntime private constructor(
   ): String {
     gatewayDataRequestTimeoutObserverForTests?.invoke(method, timeoutMs)
     val response =
-      (if (mode == NodeRuntimeMode.ScreenshotFixture) screenshotRequester(method, paramsJson) else null)
-        ?: gatewayDataRequestOverrideForTests?.invoke(gatewayScope.stableId, method, paramsJson)
+      gatewayDataRequestOverrideForTests?.invoke(gatewayScope.stableId, method, paramsJson)
+        ?: (if (mode == NodeRuntimeMode.ScreenshotFixture) screenshotRequester(method, paramsJson) else null)
         ?: operatorSession.requestForEndpoint(gatewayScope.stableId, method, paramsJson, timeoutMs)
     if (!isGatewayDataScopeCurrent(gatewayScope)) throw CancellationException("gateway scope changed")
     return response
