@@ -303,6 +303,11 @@ export function isJobEnabled(job: Pick<CronJob, "enabled">): boolean {
   return job.enabled ?? true;
 }
 
+/** Reports whether the schedule can own a timer slot. */
+export function hasTimedSchedule({ schedule: { kind } }: Pick<CronJob, "schedule">): boolean {
+  return kind === "at" || kind === "every" || kind === "cron";
+}
+
 /** Computes the next run timestamp for enabled jobs across every/at/cron schedules. */
 export function computeJobNextRunAtMs(job: CronJob, nowMs: number): number | undefined {
   if (!isJobEnabled(job)) {
@@ -650,8 +655,7 @@ export function needsCronTimerMaintenance(job: CronJob, nowMs: number): boolean 
   return (
     isExpiredCronScheduleRepairCandidate(job, nowMs) ||
     isStaleFutureCronSlot(job, nowMs) ||
-    (job.schedule.kind !== "stream" &&
-      job.schedule.kind !== "on-exit" &&
+    (hasTimedSchedule(job) &&
       isJobEnabled(job) &&
       !hasScheduledNextRunAtMs(job.state.nextRunAtMs) &&
       !hasActiveCronRun(job))
@@ -750,7 +754,7 @@ export function summarizeCronJobSchedule(state: CronServiceState) {
     if (rawEnabled) {
       enabledCount += 1;
     }
-    if ((rawEnabled ?? true) && hasNextRun) {
+    if ((rawEnabled ?? true) && hasTimedSchedule(job) && hasNextRun) {
       nextWake = nextWake === undefined ? nextRun : Math.min(nextWake, nextRun);
     }
   }
@@ -788,6 +792,7 @@ export function isJobDue(job: CronJob, nowMs: number, opts: { forced: boolean })
   }
   return (
     isJobEnabled(job) &&
+    hasTimedSchedule(job) &&
     hasScheduledNextRunAtMs(job.state.nextRunAtMs) &&
     nowMs >= job.state.nextRunAtMs
   );

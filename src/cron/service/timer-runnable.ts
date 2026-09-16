@@ -5,6 +5,7 @@ import {
   DEFAULT_ERROR_BACKOFF_SCHEDULE_MS,
   hasActiveCronRun,
   hasScheduledNextRunAtMs,
+  hasTimedSchedule,
   isJobEnabled,
   resolveJobErrorBackoffUntilMs,
   resolveJobLastRunStatus,
@@ -66,7 +67,7 @@ export function isRunnableJob(params: {
   if (!job.state) {
     job.state = {};
   }
-  if (!isJobEnabled(job)) {
+  if (!isJobEnabled(job) || !hasTimedSchedule(job)) {
     return false;
   }
   if (params.skipJobIds?.has(job.id)) {
