@@ -13,6 +13,7 @@ import {
   readExactSessionEntryRow,
   validateDeliveryCanonicalSessionEntry,
 } from "./session-accessor.sqlite-entry-read.js";
+import type { SqliteSessionEntryRevision } from "./session-accessor.sqlite-entry-revision.js";
 import {
   advanceSessionEntryMaintenanceAgeFact,
   hasSessionEntryMaintenanceAgeFact,
@@ -41,15 +42,10 @@ export type SessionEntryCacheSnapshot = {
 };
 
 type SqliteSessionEntryCache = SessionEntryCacheSnapshot & {
-  validityToken: SqliteSessionEntryCacheValidityToken;
+  validityToken: SqliteSessionEntryRevision;
   /** Present until a listing expands an exact-read snapshot to the complete store. */
   selectedKeys?: Set<string>;
   activeReads?: number;
-};
-
-export type SqliteSessionEntryCacheValidityToken = {
-  dataVersion: number;
-  sessionNodesGeneration: number;
 };
 
 type SqliteSessionEntryCacheWriteGeneration = {
@@ -136,7 +132,7 @@ function readSessionNodesGeneration(database: DatabaseSync): number {
 
 export function readSessionEntryCacheValidityToken(
   database: DatabaseSync,
-): SqliteSessionEntryCacheValidityToken {
+): SqliteSessionEntryRevision {
   return {
     dataVersion: readSqliteDataVersion(database),
     sessionNodesGeneration: readSessionNodesGeneration(database),
@@ -144,8 +140,8 @@ export function readSessionEntryCacheValidityToken(
 }
 
 function cacheValidityTokensEqual(
-  left: SqliteSessionEntryCacheValidityToken,
-  right: SqliteSessionEntryCacheValidityToken,
+  left: SqliteSessionEntryRevision,
+  right: SqliteSessionEntryRevision,
 ): boolean {
   return (
     left.dataVersion === right.dataVersion &&
@@ -168,7 +164,7 @@ export function readCachedExactSessionEntries(
   }
   const validityToken = cached.validityToken;
   try {
-    if (!cacheValidityTokensEqual(validityToken, readCacheValidityToken(database.db))) {
+    if (!cacheValidityTokensEqual(validityToken, readSessionEntryCacheValidityToken(database.db))) {
       return undefined;
     }
     // List snapshots do not retain these columns; matching generations alone
@@ -202,7 +198,7 @@ export function readCachedExactSessionEntries(
       entries.set(sessionKey, validateDeliveryCanonicalSessionEntry(key, structuredClone(entry)));
     }
     return sessionEntryCaches.get(database.db) === cached &&
-      cacheValidityTokensEqual(validityToken, readCacheValidityToken(database.db))
+      cacheValidityTokensEqual(validityToken, readSessionEntryCacheValidityToken(database.db))
       ? entries
       : undefined;
   } catch {
