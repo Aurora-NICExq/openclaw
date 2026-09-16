@@ -104,7 +104,9 @@ module.exports = {
       OPENCLAW_GATEWAY_PORT: undefined,
     };
     replaceRuntimeAuthProfileStoreSnapshots([{ agentDir, store: { version: 1, profiles: {} } }]);
-    retireAfterTest(() => unregisterResolvedAgentDir({ agentId: "main", agentDir, env }));
+    retireAfterTest(() => {
+      unregisterResolvedAgentDir({ agentId: "main", agentDir, env });
+    });
     vi.spyOn(runtimeConfig, "getRuntimeConfig").mockReturnValue(config);
     vi.spyOn(configLoader, "loadModelsConfigWithSource").mockResolvedValue({
       sourceConfig: config,
