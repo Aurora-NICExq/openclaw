@@ -3,6 +3,10 @@ import { asOptionalObjectRecord as readRecord } from "@openclaw/normalization-co
 import { collectConfiguredAgentHarnessRuntimes } from "../agents/harness-runtimes.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { MissingPublicSurfaceError } from "../plugin-sdk/facade-loader.js";
+import type {
+  OpenKeyedStoreOptions,
+  PluginStateEntry,
+} from "../plugin-state/plugin-state-store.js";
 import { normalizePluginId, normalizePluginsConfig } from "../plugins/config-state.js";
 import { passesManifestOwnerBasePolicy } from "../plugins/manifest-owner-policy.js";
 import {
@@ -50,6 +54,7 @@ type WorkerProviderHealthApi = {
   registerWorkerProviderDoctorChecks?: (host: {
     getHealthCheck: typeof getHealthCheck;
     registerHealthCheck: typeof registerHealthCheck;
+    listPluginStateEntries: <T>(options: OpenKeyedStoreOptions) => Promise<PluginStateEntry<T>[]>;
   }) => void;
 };
 
@@ -291,6 +296,11 @@ function registerBundledWorkerProviderHealthChecks(
     })?.registerWorkerProviderDoctorChecks?.({
       getHealthCheck,
       registerHealthCheck: registerCheck,
+      async listPluginStateEntries<T>(options: OpenKeyedStoreOptions) {
+        const { createPluginStateKeyedStore } =
+          await import("../plugin-state/plugin-state-store.js");
+        return createPluginStateKeyedStore<T>(pluginId, options).entries();
+      },
     });
   }
 }
