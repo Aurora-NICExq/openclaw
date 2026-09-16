@@ -218,14 +218,6 @@ export function loadRuntimePluginCandidate(params: {
         entryKind: "runtime",
         source: candidate.source,
       });
-  const runtimeSetupEntry =
-    !cliMetadata && manifestRecord.setupSource
-      ? resolvePluginRuntimeArtifact({
-          ...artifactParams,
-          entryKind: "setup",
-          source: manifestRecord.setupSource,
-        })
-      : undefined;
   const scopedSetupOnlyChannelPluginRequested =
     context.includeSetupOnlyChannelPlugins &&
     !params.validateOnly &&
@@ -254,6 +246,14 @@ export function loadRuntimePluginCandidate(params: {
     state.seenIds.set(pluginId, candidate.origin);
     return;
   }
+  let selectedEntry =
+    registrationPlan.loadSetupEntry && manifestRecord.setupSource
+      ? resolvePluginRuntimeArtifact({
+          ...artifactParams,
+          entryKind: "setup",
+          source: manifestRecord.setupSource,
+        })
+      : runtimeCandidateEntry;
   if (!enableState.enabled) {
     markPluginActivationDisabled(record, enableState.reason);
   }
@@ -395,10 +395,6 @@ export function loadRuntimePluginCandidate(params: {
     // Shipped register()-only plugins and families omitted by a catalog keep runtime discovery.
   }
 
-  let selectedEntry =
-    registrationPlan.loadSetupEntry && runtimeSetupEntry
-      ? runtimeSetupEntry
-      : runtimeCandidateEntry;
   if (cliMetadata) {
     const source = resolveCliMetadataEntrySource(candidate.rootDir, candidate.source);
     // Bundled metadata must never initialize a heavy runtime entry just to render CLI help.
