@@ -268,10 +268,6 @@ function desktopRfbLifecycle(value: unknown) {
   });
 }
 
-export type DesktopProofRfbLifecycleEvent = NonNullable<
-  ReturnType<typeof desktopRfbLifecycle>
->["events"][number];
-
 function desktopGatewayCloses(value: unknown) {
   if (value === null) {
     return null;

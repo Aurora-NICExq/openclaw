@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import net, { type Socket } from "node:net";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import type { DesktopProofRfbLifecycleEvent } from "../../../scripts/lib/desktop-resize-proof.mts";
+import type { desktopProofTestReport } from "../../../scripts/lib/desktop-resize-proof.mts";
 import { hashWorkerCredential } from "../../../src/gateway/worker-environments/credential.js";
 import {
   prepareWorkerSsh,
@@ -21,7 +21,11 @@ import type { DesktopClient } from "../components/desktop/desktop-client.ts";
 export function observeDesktopProofRfbLifecycle(element: Element) {
   const panel = element as Element & { desktopClientFactory: () => Pick<DesktopClient, "connect"> };
   type Options = Parameters<DesktopClient["connect"]>[0];
-  type Event = DesktopProofRfbLifecycleEvent;
+  type Report = ReturnType<typeof desktopProofTestReport>;
+  type ViewerResizeFailure = NonNullable<
+    Report["files"][number]["assertions"][number]["viewerResize"]
+  >;
+  type Event = NonNullable<ViewerResizeFailure["rfbLifecycle"]>["events"][number];
   const originalFactory = panel.desktopClientFactory;
   const events: Array<{ path: string | null; event: Event }> = [];
   let ordinal = 0;
@@ -93,11 +97,11 @@ export function observeDesktopProofRfbLifecycle(element: Element) {
         onConnect(...args) {
           connectedObserved = true;
           record("connected");
-          return options.onConnect?.call(options, ...args);
+          return options.onConnect?.(...args);
         },
         onDisconnect(...args) {
           record("disconnected", args[0].clean);
-          return options.onDisconnect?.call(options, ...args);
+          return options.onDisconnect?.(...args);
         },
         onSecurityFailure(...args) {
           const status = args[0].status;
@@ -106,7 +110,7 @@ export function observeDesktopProofRfbLifecycle(element: Element) {
             null,
             Number.isSafeInteger(status) && status! >= 0 && status! <= 0xffff_ffff ? status! : null,
           );
-          return options.onSecurityFailure?.call(options, ...args);
+          return options.onSecurityFailure?.(...args);
         },
       });
     };
