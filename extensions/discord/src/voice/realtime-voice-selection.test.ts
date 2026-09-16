@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers/promises";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { defineDiscordVoiceTests } from "./voice-test-harness.test-support.js";
 
@@ -302,6 +303,64 @@ defineDiscordVoiceTests(
       }
     });
 
+    it("does not hand cancelled native consult speech to the replacement", async () => {
+      useNativeVoices();
+      const [{ DiscordRealtimeSpeakerSession }, { DiscordRealtimePlayer }] = await Promise.all([
+        import("./realtime-speaker-session.js"),
+        import("./realtime-player.js"),
+      ]);
+      const { entry, manager } = await createJoinedAgentProxyFixture();
+      const player = new DiscordRealtimePlayer(entry.player);
+      const answer = createDeferred<string>();
+      const cancellation = new AbortController();
+      const context = { senderIsOwner: true, speakerLabel: "Owner" };
+      const runAgentTurn = vi.fn(() => answer.promise);
+      const createSpeaker = (sessionId: string, voiceOverride: string) =>
+        new DiscordRealtimeSpeakerSession({
+          accountId: "default",
+          cfg: {},
+          discordConfig: { voice: { enabled: true, realtime: { provider: "openai" } } },
+          entry,
+          mode: "agent-proxy",
+          player,
+          sessionId,
+          voiceOverride,
+          runAgentTurn,
+          resolveSpeakerContext: async () => context,
+          onTerminalError: vi.fn(),
+        });
+      const original = createSpeaker("cancelled-consult-source", "marin");
+      const replacement = createSpeaker("cancelled-consult-replacement", "cedar");
+      try {
+        await original.connect();
+        const sourceBridge = lastRealtimeBridge();
+        const turn = original.beginSpeakerTurn(context, "u-owner");
+        turn.sendInputAudio(Buffer.alloc(3840));
+        turn.close();
+        const consultation = sourceBridge.bridgeParams.runAgentConsult!({
+          prompt: "Check the agenda.",
+          signal: cancellation.signal,
+        });
+        const rejected = expect(consultation).rejects.toThrow("Consult cancelled");
+        await original.close("detach");
+        await replacement.connect();
+        const replacementBridge = lastRealtimeBridge();
+        original.transferPendingSpeechTo(replacement);
+        answer.resolve("The cancelled agenda answer.");
+        cancellation.abort(new Error("Consult cancelled"));
+        await rejected;
+        expect(runAgentTurn).toHaveBeenCalledOnce();
+        expect(sentUserMessages(sourceBridge.session)).toHaveLength(0);
+        expect(sentUserMessages(replacementBridge.session)).toHaveLength(0);
+      } finally {
+        answer.resolve("");
+        await original.close();
+        await replacement.close();
+        player.close();
+        await manager.destroy();
+      }
+    });
+
     it.each(["native", "fallback"] as const)(
       "retains a %s answer that finishes while the old provider closes",
       async (path) => {
@@ -340,7 +399,7 @@ defineDiscordVoiceTests(
           await closing.promise;
           const replacement = lastRealtimeBridge();
           answer.resolve({ payloads: [{ text: "The agenda is ready." }] });
-          await new Promise<void>((resolve) => setImmediate(resolve));
+          await setImmediate();
           expect(sentUserMessages(original.session)).toHaveLength(0);
           expect(sentUserMessages(replacement.session)).toHaveLength(0);
           finishClose.resolve();

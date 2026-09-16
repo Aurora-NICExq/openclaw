@@ -220,7 +220,7 @@ export class DiscordRealtimeConsults {
       const recentConsult =
         nativeConsult.kind === "in_flight" || nativeConsult.kind === "already_delivered"
           ? nativeConsult.handle
-          : this.findRecentAgentProxyConsultContext(consultMessage);
+          : this.params.harness.forcedConsults.findRecent(consultMessage);
       if (recentConsult) {
         const recentSpeaker = recentConsult.context?.speaker;
         if (this.params.turns.hasPendingSpeakerAudioContext()) {
@@ -405,6 +405,7 @@ export class DiscordRealtimeConsults {
       isCurrent: () => !this.params.stopped() && providerEpoch === this.params.providerEpoch(),
       ...(params.signal ? { signal: params.signal } : {}),
     });
+    params.signal?.throwIfAborted();
     if (params.deliveryOwner !== "consult" && this.detachedProviderEpoch === providerEpoch) {
       this.params.playback.deliverRetainedSpeech(text);
     }
@@ -432,7 +433,7 @@ export class DiscordRealtimeConsults {
     }
     const context = speakerContext ?? this.params.turns.consumePendingSpeakerContext();
     if (!context) {
-      const recent = this.findRecentAgentProxyConsultContext(question);
+      const recent = this.params.harness.forcedConsults.findRecent(question);
       if (recent) {
         logVoiceVerbose(
           `realtime forced agent consult skipped (already delegated): guild ${this.params.entry.guildId} channel ${this.params.entry.channelId} speaker ${recent.context?.speaker.userId ?? "unknown"}`,
@@ -567,12 +568,6 @@ export class DiscordRealtimeConsults {
       state.promise = tracked;
     }
     return tracked;
-  }
-
-  private findRecentAgentProxyConsultContext(
-    consultMessage: string,
-  ): AgentProxyConsultHandle | undefined {
-    return this.params.harness.forcedConsults.findRecent(consultMessage);
   }
 
   private async submitTerminalRealtimeToolResult(
