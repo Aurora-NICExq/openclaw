@@ -47,7 +47,7 @@ describe("litellm plugin", () => {
     "preserves an explicit proxy's authored models through registered %s auth",
     async (mode) => {
       const auth = registerProvider()?.auth?.[0];
-      const config: OpenClawConfig = {
+      const config = {
         models: {
           providers: {
             litellm: {
@@ -68,7 +68,7 @@ describe("litellm plugin", () => {
             },
           },
         },
-      };
+      } satisfies OpenClawConfig;
       let result: OpenClawConfig | null | undefined;
       if (mode === "non-interactive") {
         result = await auth?.runNonInteractive?.({
