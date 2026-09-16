@@ -309,8 +309,8 @@ describe("sanitizeForPlainText", () => {
     expect(sanitizeForPlainText(input)).toBe("Hello\n*world* this is _nice_");
   });
 
-  it("collapses excessive newlines", () => {
-    expect(sanitizeForPlainText("a<br><br><br><br>b")).toBe("a\n\nb");
+  it.each(["a<br><br><br><br>b", "a\n\n\nb"])("collapses excessive newlines in %s", (input) => {
+    expect(sanitizeForPlainText(input)).toBe("a\n\nb");
   });
 });
 
