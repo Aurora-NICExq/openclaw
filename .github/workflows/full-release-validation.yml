@@ -1668,7 +1668,7 @@ jobs:
   qualify_npm_package:
     name: Qualify release npm artifacts
     needs: [resolve_target, prepare_npm_package]
-    if: ${{ inputs.rerun_group == 'all' && needs.prepare_npm_package.result == 'success' }}
+    if: ${{ always() && inputs.rerun_group == 'all' && needs.prepare_npm_package.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     outputs:
