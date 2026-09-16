@@ -200,6 +200,176 @@ export async function readDesktopProofNodeStreamCloses(file: string) {
   }
 }
 
+function diagnosticEvents<T>(value: unknown, project: (event: unknown) => T) {
+  if (value === null) {
+    return null;
+  }
+  if (!isRecord(value) || !Array.isArray(value.events) || value.events.length > 8) {
+    throw new Error("Invalid desktop lifecycle diagnostics");
+  }
+  return { events: value.events.map(project), omitted: reportInteger(value.omitted, 1_000_000) };
+}
+
+function diagnosticEnum<const T extends readonly string[]>(value: unknown, values: T): T[number] {
+  const found = values.find((entry) => entry === value);
+  if (!found) {
+    throw new Error("Invalid desktop lifecycle category");
+  }
+  return found;
+}
+
+function desktopEndpointCloses(value: unknown) {
+  return diagnosticEvents(value, (event) => {
+    if (!isRecord(event) || (event.hadError !== null && typeof event.hadError !== "boolean")) {
+      throw new Error("Invalid desktop endpoint close");
+    }
+    return {
+      connectionIndex: reportInteger(event.connectionIndex, 1_000_000),
+      side: diagnosticEnum(event.side, ["client", "upstream", "fixture"]),
+      event: diagnosticEnum(event.event, ["end", "error", "close", "cleanup"]),
+      errorCategory:
+        event.errorCategory === null
+          ? null
+          : diagnosticEnum(event.errorCategory, [
+              "reset",
+              "broken-pipe",
+              "refused",
+              "timeout",
+              "other",
+            ]),
+      hadError: event.hadError,
+    };
+  });
+}
+
+function desktopRfbLifecycle(value: unknown) {
+  return diagnosticEvents(value, (event) => {
+    if (
+      !isRecord(event) ||
+      typeof event.connectedObserved !== "boolean" ||
+      (event.clean !== null && typeof event.clean !== "boolean")
+    ) {
+      throw new Error("Invalid desktop RFB lifecycle");
+    }
+    return {
+      ordinal: reportInteger(event.ordinal, 1_000_000),
+      socketIndex: event.socketIndex === null ? null : reportInteger(event.socketIndex, 9_999),
+      phase: diagnosticEnum(event.phase, [
+        "connecting",
+        "connected",
+        "security-failure",
+        "disconnected",
+      ]),
+      connectedObserved: event.connectedObserved,
+      clean: event.clean,
+      securityStatus:
+        event.securityStatus === null ? null : reportInteger(event.securityStatus, 0xffff_ffff),
+    };
+  });
+}
+
+export type DesktopProofRfbLifecycleEvent = NonNullable<
+  ReturnType<typeof desktopRfbLifecycle>
+>["events"][number];
+
+function desktopGatewayCloses(value: unknown) {
+  if (value === null) {
+    return null;
+  }
+  if (!isRecord(value)) {
+    throw new Error("Invalid desktop gateway diagnostics");
+  }
+  return {
+    observerCloses: diagnosticEvents(value.observerCloses, (event) => {
+      if (!isRecord(event)) {
+        throw new Error("Invalid desktop observer close");
+      }
+      return {
+        trigger: diagnosticEnum(event.trigger, [
+          "browser-close",
+          "browser-error",
+          "stream-close",
+          "stream-error",
+          "owner-close",
+          "authority-revoked",
+          "invalid-view-only-stream",
+          "authentication-failed",
+        ]),
+        cleanupCode: reportInteger(event.cleanupCode, 65_535),
+        closeCode: reportInteger(event.closeCode, 65_535),
+      };
+    }),
+    sshTunnelExits: diagnosticEvents(value.sshTunnelExits, (event) => {
+      if (!isRecord(event) || typeof event.stopRequested !== "boolean") {
+        throw new Error("Invalid desktop SSH exit");
+      }
+      return {
+        code: event.code === null ? null : reportInteger(event.code, 255),
+        signal:
+          event.signal === null
+            ? null
+            : diagnosticEnum(event.signal, [
+                "SIGHUP",
+                "SIGINT",
+                "SIGQUIT",
+                "SIGILL",
+                "SIGTRAP",
+                "SIGABRT",
+                "SIGBUS",
+                "SIGFPE",
+                "SIGKILL",
+                "SIGUSR1",
+                "SIGSEGV",
+                "SIGUSR2",
+                "SIGPIPE",
+                "SIGALRM",
+                "SIGTERM",
+                "SIGCHLD",
+                "SIGCONT",
+                "SIGSTOP",
+                "SIGTSTP",
+                "SIGTTIN",
+                "SIGTTOU",
+                "SIGURG",
+                "SIGXCPU",
+                "SIGXFSZ",
+                "SIGVTALRM",
+                "SIGPROF",
+                "SIGWINCH",
+                "SIGIO",
+                "SIGSYS",
+              ]),
+        stopRequested: event.stopRequested,
+      };
+    }),
+  };
+}
+
+export async function readDesktopProofGatewayCloses(file: string) {
+  const records = await readDesktopProofLog(file);
+  if (!records) {
+    return null;
+  }
+  const events = (message: string) => {
+    const matching = records.flatMap((record) =>
+      isRecord(record) &&
+      record["0"] === '{"subsystem":"gateway/desktop"}' &&
+      record["2"] === message
+        ? [record["1"]]
+        : [],
+    );
+    return { events: matching.slice(-8), omitted: Math.max(0, matching.length - 8) };
+  };
+  try {
+    return desktopGatewayCloses({
+      observerCloses: events("desktop observer closed"),
+      sshTunnelExits: events("desktop SSH tunnel exited"),
+    });
+  } catch {
+    return null;
+  }
+}
+
 function desktopViewerResizeFailure(value: unknown) {
   if (!isRecord(value) || typeof value.pageClosed !== "boolean") {
     throw new Error("Invalid desktop viewer diagnostic");
@@ -230,6 +400,15 @@ function desktopViewerResizeFailure(value: unknown) {
     socketCloses: desktopSocketCloses(value.socketCloses),
     ...(value.nodeStreamCloses !== undefined
       ? { nodeStreamCloses: desktopNodeStreamCloses(value.nodeStreamCloses) }
+      : {}),
+    ...(value.endpointCloses !== undefined
+      ? { endpointCloses: desktopEndpointCloses(value.endpointCloses) }
+      : {}),
+    ...(value.rfbLifecycle !== undefined
+      ? { rfbLifecycle: desktopRfbLifecycle(value.rfbLifecycle) }
+      : {}),
+    ...(value.gatewayCloses !== undefined
+      ? { gatewayCloses: desktopGatewayCloses(value.gatewayCloses) }
       : {}),
   };
 }
