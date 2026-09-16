@@ -24,6 +24,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/server-methods.test.ts",
   "src/gateway/server-methods/worktrees.authorization.test.ts",
   "src/gateway/server-methods/worktrees.test.ts",
+  "src/gateway/server.sessions.create-worktree-spawn.test.ts",
   "src/gateway/session-delivery-clock-jump.integration.test.ts",
   "src/gateway/setup-inference.first-signin.integration.test.ts",
 ];
@@ -61,6 +62,7 @@ export const gatewayServerIsolatedTestFiles = [
   "src/gateway/server-plugin-subagent-runtime.overrides.test.ts",
   // Loads the real plugin runtime that neighboring server tests replace with mocks.
   "src/gateway/server.chat-cli-auth.test.ts",
+  "src/gateway/server.placement-abandonment.lifecycle.test.ts",
   "src/gateway/server.placement-abandonment.test.ts",
   "src/gateway/server.sessions.compaction-read-errors.test.ts",
 ];
