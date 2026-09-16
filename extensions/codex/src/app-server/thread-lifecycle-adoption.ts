@@ -259,40 +259,6 @@ async function preparePendingCodexThreadResume(
   }
 }
 
-/** Preserve an idle remote predecessor until a freshly configured successor is committed. */
-export async function prepareCodexThreadReplacement(
-  params: CodexStartOrResumeThreadParams,
-  binding: CodexAppServerThreadBinding,
-  context: Pick<CodexThreadRequestContext, "lifecycleTiming" | "throwIfAborted">,
-): Promise<() => void> {
-  const assertClient = captureCodexAppServerClientLifetime(params.client, "connection");
-  const assertOwner = params.assertCurrent;
-  const assertCurrent = () => {
-    params.params.hostCapabilities.assertActive();
-    assertOwner?.();
-    params.signal?.throwIfAborted();
-    assertClient();
-    if (isCodexAppServerLiveThreadClaimed(params.client, binding.threadId)) {
-      throw new CodexAdoptedThreadActiveError();
-    }
-  };
-  assertCurrent();
-  try {
-    const thread = await assertAdoptedCodexThreadResumeAllowed(
-      params,
-      binding.threadId,
-      context,
-      assertCurrent,
-    );
-    if (!isCodexThreadNonRunning(thread.status)) {
-      throw new CodexAdoptedThreadActiveError();
-    }
-  } finally {
-    assertCurrent();
-  }
-  return assertCurrent;
-}
-
 /** Observe teardown before release; a successful resume alone can acknowledge ignored overrides. */
 export async function prepareCodexThreadResume(
   params: CodexStartOrResumeThreadParams,
@@ -301,7 +267,7 @@ export async function prepareCodexThreadResume(
 ): Promise<CodexThreadResumePreparation> {
   const assertClient = captureCodexAppServerClientLifetime(
     params.client,
-    binding.connectionScope === "supervision" ? "connection" : "native-process",
+    binding.connectionScope === "supervision" ? "connection" : "thread-configuration",
   );
   const assertCurrent = () => {
     params.params.hostCapabilities.assertActive();
