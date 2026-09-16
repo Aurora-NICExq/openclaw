@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { applyLitellmProviderConfig } from "./onboard.js";
 
 describe("litellm onboard", () => {
-  it("preserves existing baseUrl and api key while adding the default model", () => {
+  it("preserves an explicit proxy's authored models, base URL, and API key", () => {
     const provider = expectProviderOnboardMergedLegacyConfig({
       applyProviderConfig: applyLitellmProviderConfig,
       providerId: "litellm",
@@ -17,6 +17,6 @@ describe("litellm onboard", () => {
       legacyApiKey: "  old-key  ",
     });
 
-    expect(provider?.models.map((m) => m.id)).toEqual(["custom-model", "claude-opus-4-6"]);
+    expect(provider?.models.map((m) => m.id)).toEqual(["custom-model"]);
   });
 });

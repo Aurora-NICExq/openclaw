@@ -96,76 +96,93 @@ describe("litellm plugin", () => {
     });
   });
 
-  it("honors --custom-base-url in non-interactive API-key setup", async () => {
-    const provider = registerProvider();
-    const auth = provider?.auth?.[0];
-    const agentDir = mkdtempSync(join(tmpdir(), "openclaw-litellm-auth-"));
-    const resolveApiKey = vi.fn(async () => ({ key: "litellm-test-key", source: "flag" as const }));
-    const toApiKeyCredential = vi.fn(({ provider: providerId, resolved }) => ({
-      type: "api_key" as const,
-      provider: providerId,
-      key: resolved.key,
-    }));
+  it.each([
+    {
+      baseUrl: "https://litellm.example/v1/",
+      expectedBaseUrl: "https://litellm.example/v1",
+      expectedModels: [],
+    },
+    {
+      baseUrl: undefined,
+      expectedBaseUrl: "http://localhost:4000",
+      expectedModels: [LITELLM_DEFAULT_MODEL],
+    },
+  ])(
+    "configures model discovery for proxy URL $baseUrl",
+    async ({ baseUrl, expectedBaseUrl, expectedModels }) => {
+      const provider = registerProvider();
+      const auth = provider?.auth?.[0];
+      const agentDir = mkdtempSync(join(tmpdir(), "openclaw-litellm-auth-"));
+      const resolveApiKey = vi.fn(async () => ({
+        key: "litellm-test-key",
+        source: "flag" as const,
+      }));
+      const toApiKeyCredential = vi.fn(({ provider: providerId, resolved }) => ({
+        type: "api_key" as const,
+        provider: providerId,
+        key: resolved.key,
+      }));
 
-    try {
-      const result = await auth?.runNonInteractive?.({
-        authChoice: "litellm-api-key",
-        config: {},
-        baseConfig: {},
-        opts: {
-          litellmApiKey: "litellm-test-key",
-          customBaseUrl: "https://litellm.example/v1/",
-        },
-        runtime: createRuntimeSpies(),
-        agentDir,
-        resolveApiKey,
-        toApiKeyCredential,
-      });
-
-      expect(result).toStrictEqual({
-        auth: {
-          profiles: {
-            "litellm:default": {
-              provider: "litellm",
-              mode: "api_key",
-            },
+      try {
+        const result = await auth?.runNonInteractive?.({
+          authChoice: "litellm-api-key",
+          config: {},
+          baseConfig: {},
+          opts: {
+            litellmApiKey: "litellm-test-key",
+            customBaseUrl: baseUrl,
           },
-        },
-        agents: {
-          defaults: {
-            models: {
-              "litellm/claude-opus-4-6": {
-                alias: "LiteLLM",
+          runtime: createRuntimeSpies(),
+          agentDir,
+          resolveApiKey,
+          toApiKeyCredential,
+        });
+
+        expect(result).toStrictEqual({
+          auth: {
+            profiles: {
+              "litellm:default": {
+                provider: "litellm",
+                mode: "api_key",
               },
             },
-            model: {
-              primary: "litellm/claude-opus-4-6",
+          },
+          agents: {
+            defaults: {
+              models: {
+                "litellm/claude-opus-4-6": {
+                  alias: "LiteLLM",
+                },
+              },
+              model: {
+                primary: "litellm/claude-opus-4-6",
+              },
             },
           },
-        },
-        models: {
-          mode: "merge",
-          providers: {
-            litellm: {
-              baseUrl: "https://litellm.example/v1",
-              api: "openai-completions",
-              models: [LITELLM_DEFAULT_MODEL],
+          models: {
+            mode: "merge",
+            providers: {
+              litellm: {
+                baseUrl: expectedBaseUrl,
+                api: "openai-completions",
+                models: expectedModels,
+              },
             },
           },
-        },
-      });
-      expect(resolveApiKey).toHaveBeenCalledWith({
-        provider: "litellm",
-        flagValue: "litellm-test-key",
-        flagName: "--litellm-api-key",
-        envVar: "LITELLM_API_KEY",
-      });
-      expect(toApiKeyCredential).toHaveBeenCalledWith({
-        provider: "litellm",
-        resolved: { key: "litellm-test-key", source: "flag" },
-      });
-    } finally {
-      rmSync(agentDir, { recursive: true, force: true });
-    }
-  });
+        });
+        expect(resolveApiKey).toHaveBeenCalledWith({
+          provider: "litellm",
+          flagValue: "litellm-test-key",
+          flagName: "--litellm-api-key",
+          envVar: "LITELLM_API_KEY",
+        });
+        expect(toApiKeyCredential).toHaveBeenCalledWith({
+          provider: "litellm",
+          resolved: { key: "litellm-test-key", source: "flag" },
+        });
+      } finally {
+        rmSync(agentDir, { recursive: true, force: true });
+      }
+    },
+  );
 });
