@@ -11,6 +11,8 @@ import { GATEWAY_CLIENT_CAPS } from "../../packages/gateway-protocol/src/client-
 import type {
   EventFrame,
   SessionsCatalogListResult,
+  TasksGetResult,
+  TasksHistoryResult,
   TasksListResult,
   ToolsInvokeResult,
 } from "../../packages/gateway-protocol/src/index.js";
@@ -38,6 +40,7 @@ import { isTruthyEnvValue } from "../infra/env.js";
 import { pluginStateEntriesInKeyRange } from "../plugin-state/plugin-state-store.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { extractFirstTextBlock } from "../shared/chat-message-content.js";
+import { loadTaskRegistryStateFromSqliteReadOnly } from "../tasks/task-registry.store.sqlite.js";
 import type { GatewayClient } from "./client.js";
 import {
   connectTestGatewayClient,
@@ -1991,6 +1994,134 @@ async function verifyCodexNativeSubagentBridgeProbe(params: {
       text,
     )}; events=${JSON.stringify(events)}; tasks=${JSON.stringify(codexNativeTasks)}`,
   ).toBeDefined();
+  if (!deliveredTask) {
+    throw new Error("Native child completion was not persisted.");
+  }
+  const childThreadId = deliveredTask.sourceId?.match(/^codex-thread:([^:]+)$/)?.[1];
+  expect(childThreadId).toBeTypeOf("string");
+  const firstRecord = loadTaskRegistryStateFromSqliteReadOnly().tasks.get(deliveredTask.id);
+  expect(asOptionalRecord(firstRecord?.detail)?.nativeTurnId).toBeTypeOf("string");
+  const parentThreadId = observedCodexThreadIds.get(params.sessionKey);
+  const expectedAssignments = [
+    { taskId: deliveredTask.id, result: childToken, record: firstRecord },
+  ];
+  for (const [ordinal, prefix] of [
+    ["SECOND", "FOLLOWUP"],
+    ["THIRD", "THIRD"],
+  ] as const) {
+    const followupToken = `CODEX-NATIVE-${prefix}-${runId.slice(0, 6).toUpperCase()}`;
+    const followupParentToken = `CODEX-NATIVE-PARENT-${prefix}-${runId.slice(0, 6).toUpperCase()}`;
+    // Each Gateway request owns a fresh parent registration after the prior turn ended.
+    const followup = await requestAgentTextWithEvents({
+      client: params.client,
+      eventPrefix: "codex_app_server.",
+      includeAllSessions: true,
+      sessionKey: params.sessionKey,
+      message: [
+        `Give the existing native child ${childThreadId} another assignment. Do not spawn a new child.`,
+        "Use native followup_task, or send_input if that is the available native follow-up tool.",
+        `Tell that child: Run the native exec_command tool with command printf ${ordinal}_NATIVE_SHELL, then reply exactly ${followupToken} and nothing else.`,
+        "Wait for its new result before replying. Do not answer from your own knowledge. Keep the child open for another follow-up.",
+        `After the new child result returns, reply exactly ${followupParentToken} ${followupToken} and nothing else.`,
+      ].join("\n"),
+    });
+    expect(followup.text.trim()).toBe(`${followupParentToken} ${followupToken}`);
+    expect(observedCodexThreadIds.get(params.sessionKey)).toBe(parentThreadId);
+    try {
+      await expect
+        .poll(
+          async () => {
+            codexNativeTasks = await listCodexNativeTasks();
+            return findDeliveredCodexNativeTask(codexNativeTasks, followupToken);
+          },
+          { timeout: CODEX_HARNESS_REQUEST_TIMEOUT_MS, interval: 1_000 },
+        )
+        .toBeDefined();
+    } catch (error) {
+      const records = loadTaskRegistryStateFromSqliteReadOnly().tasks;
+      logCodexLiveStep("native-subagent-followup:missing-task", {
+        ordinal,
+        priorAssignments: expectedAssignments.map((assignment) => ({
+          id: assignment.taskId,
+          runId: assignment.record?.runId,
+          nativeTurnId: asOptionalRecord(assignment.record?.detail)?.nativeTurnId,
+          status: assignment.record?.status,
+          result: assignment.result,
+        })),
+        tasks: codexNativeTasks.map((task) => ({
+          id: task.id,
+          runId: task.runId,
+          status: task.status,
+          deliveryStatus: task.deliveryStatus,
+          nativeTurnId: asOptionalRecord(records.get(task.id)?.detail)?.nativeTurnId,
+          summary: task.terminalSummary ?? task.progressSummary,
+        })),
+      });
+      throw error;
+    }
+    codexNativeTasks = await listCodexNativeTasks();
+    const followupTask = findDeliveredCodexNativeTask(codexNativeTasks, followupToken)!;
+    expect(expectedAssignments.map((assignment) => assignment.taskId)).not.toContain(
+      followupTask.id,
+    );
+    expect(
+      codexNativeTasks.filter((task) => task.sourceId?.startsWith(`codex-thread:${childThreadId}`)),
+    ).toHaveLength(expectedAssignments.length + 1);
+    const persisted = loadTaskRegistryStateFromSqliteReadOnly().tasks;
+    for (const assignment of expectedAssignments) {
+      expect(persisted.get(assignment.taskId)).toEqual(assignment.record);
+    }
+    const followupRecord = persisted.get(followupTask.id);
+    const nativeTurnId = asOptionalRecord(followupRecord?.detail)?.nativeTurnId;
+    if (typeof nativeTurnId !== "string") {
+      throw new Error("Follow-up task did not persist its native turn locator.");
+    }
+    expect(
+      expectedAssignments.map(
+        (assignment) => asOptionalRecord(assignment.record?.detail)?.nativeTurnId,
+      ),
+    ).not.toContain(nativeTurnId);
+    expect(followupTask.sourceId).toBe(`codex-thread:${childThreadId}:turn:${nativeTurnId}`);
+    expectedAssignments.push({
+      taskId: followupTask.id,
+      result: followupToken,
+      record: followupRecord,
+    });
+    let childHistory: unknown[] | undefined;
+    for (const { taskId, result } of expectedAssignments) {
+      const detail = await params.client.request<TasksGetResult>("tasks.get", { taskId });
+      expect(detail.task.result).toBe(result);
+      const history = await params.client.request<TasksHistoryResult>("tasks.history", {
+        taskId,
+        limit: 100,
+      });
+      expect(JSON.stringify(history.messages)).toContain(result);
+      if (childHistory) {
+        expect(history.messages).toEqual(childHistory);
+      } else {
+        childHistory = history.messages;
+      }
+      for (const shellOrdinal of ordinal === "SECOND" ? ["SECOND"] : ["SECOND", "THIRD"]) {
+        expect(history.messages).toContainEqual(
+          expect.objectContaining({
+            role: "toolResult",
+            content: [{ type: "text", text: `${shellOrdinal}_NATIVE_SHELL` }],
+            isError: false,
+          }),
+        );
+      }
+    }
+    logCodexLiveStep("native-subagent-followup:complete", {
+      childThreadId,
+      assignmentCount: expectedAssignments.length,
+      firstTaskId: deliveredTask.id,
+      followupTaskId: followupTask.id,
+      nativeTurnId,
+      parentReply: followup.text,
+      firstResult: childToken,
+      followupResult: followupToken,
+    });
+  }
 
   const parentControlledChild = events.some(
     (event) => event.stream === "codex_app_server.item" && event.data?.type === "subAgentActivity",
@@ -1998,8 +2129,6 @@ async function verifyCodexNativeSubagentBridgeProbe(params: {
   if (parentControlledChild) {
     // Native task IDs record the child thread at creation; model output is not
     // authoritative enough to select the thread for this ownership probe.
-    const childThreadId = deliveredTask?.sourceId?.match(/^codex-thread:(.+)$/)?.[1];
-    expect(childThreadId).toBeTypeOf("string");
     const sessionId = await readCodexHarnessSessionId(params);
     const readBinding = async () => {
       const row = (
@@ -2052,12 +2181,15 @@ async function verifyCodexNativeSubagentBridgeProbe(params: {
     return tasks.filter((entry) => entry.runtime === "subagent" && entry.kind === "codex-native");
   }
 
-  function findDeliveredCodexNativeTask(tasks: Awaited<ReturnType<typeof listCodexNativeTasks>>) {
+  function findDeliveredCodexNativeTask(
+    tasks: Awaited<ReturnType<typeof listCodexNativeTasks>>,
+    result = childToken,
+  ) {
     return tasks.find(
       (entry) =>
         entry.status === "completed" &&
         entry.deliveryStatus === "delivered" &&
-        entry.terminalSummary?.includes(childToken),
+        entry.terminalSummary?.includes(result),
     );
   }
 }
@@ -2602,8 +2734,15 @@ describeLive("gateway live (Codex harness)", () => {
         gatewayEvents.push(event);
         maybeResolveGuardianPluginApproval(event);
         if (event.event === "agent") {
+          const agentEvent = event.payload as AgentEventPayload;
+          logCodexLiveStep("agent-event", {
+            runId: agentEvent.runId,
+            stream: agentEvent.stream,
+            phase: agentEvent.data?.phase,
+            type: agentEvent.data?.type,
+          });
           for (const listener of gatewayAgentEventListeners) {
-            listener(event.payload as AgentEventPayload);
+            listener(agentEvent);
           }
         }
       };

@@ -143,6 +143,19 @@ dependencies. Idle, interrupted, or unloaded native threads do not prove that
 the delegated task succeeded. A resumed native turn clears the previous turn's
 current tool activity while retaining the task identity.
 
+Follow-up work after a native child has finished creates a separate task run on
+the same Codex thread. Earlier results and their delivery status remain intact.
+Each task's transcript links to the full native child conversation, including later follow-ups.
+Interrupted work keeps its task identity when the native turn resumes.
+If a recovered turn's end is still unknown, OpenClaw waits for native history or
+an end event before deciding whether later work resumes that task or starts a new one.
+Older tasks without enough native turn information remain unresolved instead of
+borrowing another turn's result.
+Native result receipts do not identify the child's turn. If an earlier result
+is still being recovered or repeated identical results make a receipt ambiguous,
+OpenClaw preserves the later pending delivery instead of risking a lost result;
+this can cause an additional continuation.
+
 Codex owns native subagent execution and controls. Follow up through the parent
 session, which can use Codex's native collaboration tools. OpenClaw's task view
 observes those children and delivers results after a parent yields. The native
