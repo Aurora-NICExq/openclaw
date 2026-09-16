@@ -8425,11 +8425,19 @@ class NodeRuntime private constructor(
       // Global discovery supplies only attribution. Display and decision permissions
       // always come from the canonical reviewer projection.
       val discovered = mutableListOf<GatewayExecApprovalSummary>()
+      val failedKinds = mutableSetOf<GatewayApprovalKind>()
       for (kind in GatewayApprovalKind.entries) {
+        if (!isGatewayDataScopeCurrent(gatewayScope)) return
         val method = "${kind.eventPrefix}.approval.list"
         if (kind != GatewayApprovalKind.Exec && (captureGatewayMethods().approvalRpcFamily != GatewayApprovalRpcFamily.Canonical || gatewayAdvertisesMethod(method) != true)) continue
-        val res = requestGatewayData(gatewayScope, method, "{}")
-        discovered += parseGatewayExecApprovalListPayload(res, json, kind)
+        try {
+          val res = requestGatewayData(gatewayScope, method, "{}")
+          discovered += parseGatewayExecApprovalListPayload(res, json, kind)
+        } catch (err: CancellationException) {
+          throw err
+        } catch (_: Throwable) {
+          failedKinds += kind
+        }
       }
       val existing = mutableExecApprovalInbox.value.approvals.associateBy { it.id }
       val terminalApprovals = mutableListOf<GatewayExecApprovalSnapshot.Terminal>()
@@ -8486,6 +8494,7 @@ class NodeRuntime private constructor(
         refreshGeneration = refreshGeneration,
         rows = rows,
         terminalApprovals = terminalApprovals,
+        failedKinds = failedKinds,
       )
     } catch (err: CancellationException) {
       throw err
@@ -9035,6 +9044,7 @@ class NodeRuntime private constructor(
     refreshGeneration: Long,
     rows: List<GatewayExecApprovalSummary>,
     terminalApprovals: List<GatewayExecApprovalSnapshot.Terminal>,
+    failedKinds: Set<GatewayApprovalKind>,
   ) {
     publishGatewayData(gatewayScope) {
       synchronized(execApprovalsStateLock) {
@@ -9051,9 +9061,17 @@ class NodeRuntime private constructor(
           val terminalIds = terminalApprovals.map { it.id }
           resolvedExecApprovalIds.addAll(terminalIds)
           terminalIds.forEach(pendingExecApprovalWrites::remove)
-          val nextRows = rows.filterNot { it.id in resolvedExecApprovalIds }.filterActiveExecApprovals()
-          execApprovalsSnapshotReady = true
-          mutableExecApprovalInbox.update { it.copy(approvals = nextRows, notice = notice ?: it.notice) }
+          // A list replaces only its own family; retain failed families from current owner state.
+          val retainedRows = mutableExecApprovalInbox.value.approvals.filter { it.kind in failedKinds }
+          val nextRows = (rows + retainedRows).filterNot { it.id in resolvedExecApprovalIds }.filterActiveExecApprovals()
+          execApprovalsSnapshotReady = failedKinds.isEmpty()
+          mutableExecApprovalInbox.update {
+            it.copy(
+              approvals = nextRows,
+              notice = notice ?: it.notice,
+              errorText = if (failedKinds.isEmpty()) null else execApprovalLoadFailureMessage(),
+            )
+          }
           scheduleExecApprovalExpiryPrune(nextRows)
         }
       }

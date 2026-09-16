@@ -146,6 +146,67 @@ class GatewayExecApprovalRuntimeTest {
     }
 
   @Test
+  fun approvalListFailuresPreserveFailedFamiliesWhileExecRefreshes() =
+    runBlocking {
+      for (failedKinds in listOf(setOf(GatewayApprovalKind.Plugin), setOf(GatewayApprovalKind.SystemAgent), setOf(GatewayApprovalKind.Plugin, GatewayApprovalKind.SystemAgent))) {
+        val retained =
+          GatewayApprovalKind.entries.map { kind ->
+            approvalSummary(id = "${kind.wireValue}-old").copy(kind = kind, sessionKey = "agent:main:inactive")
+          }
+        val runtime =
+          approvalRuntime(
+            unifiedMethods + setOf("plugin.approval.list", "openclaw.approval.list"),
+            retained + retained.map { it.copy(id = "${it.id}-expired", expiresAtMs = 1) },
+          )
+        val listRequests = mutableListOf<String>()
+        val detailRequests = mutableListOf<String>()
+        runtime.gatewayDataRequestOverrideForTests = { _, method, params ->
+          when {
+            method.endsWith(".approval.list") -> {
+              listRequests += method
+              val kind = GatewayApprovalKind.entries.first { method == "${it.eventPrefix}.approval.list" }
+              if (kind in failedKinds) throw rejected("UNAVAILABLE", "$method unavailable")
+              if (kind == GatewayApprovalKind.Exec) {
+                """[{"id":"exec-new","createdAtMs":200,"expiresAtMs":4000000000000}]"""
+              } else {
+                "[]"
+              }
+            }
+
+            method == "approval.get" -> {
+              val id =
+                Json
+                  .parseToJsonElement(requireNotNull(params))
+                  .jsonObject
+                  .getValue("id")
+                  .jsonPrimitive.content
+              detailRequests += id
+              unifiedGet("pending", null, id)
+            }
+
+            else -> {
+              error("unexpected method $method")
+            }
+          }
+        }
+
+        runtime.refreshExecApprovals()
+        waitUntil { runtime.execApprovalInbox.value.errorText != null && !runtime.execApprovalInbox.value.refreshing }
+
+        val approvals = runtime.execApprovalInbox.value.approvals
+        assertEquals(
+          "Successful exec discovery must publish despite failures in $failedKinds",
+          setOf("exec-new") + failedKinds.map { "${it.wireValue}-old" },
+          approvals.map { it.id }.toSet(),
+        )
+        assertEquals(retained.filter { it.kind in failedKinds }, approvals.filter { it.kind in failedKinds })
+        assertEquals(listOf("exec-new"), detailRequests)
+        assertEquals(GatewayApprovalKind.entries.map { "${it.eventPrefix}.approval.list" }, listRequests)
+        invokeClearOperatorState(runtime, retirePendingRuns = true)
+      }
+    }
+
+  @Test
   fun bulkRefreshExpiresEveryPendingDeadlineWithoutAnotherGatewayEvent() =
     runBlocking {
       val runtime = connectedRuntime()
@@ -381,24 +442,30 @@ class GatewayExecApprovalRuntimeTest {
   @Test
   fun cancelledApprovalRefreshPreservesOwnerStateWithoutPublishingFailure() =
     runBlocking {
-      val runtime = approvalRuntime()
-      val requestStarted = CompletableDeferred<Unit>()
-      runtime.gatewayDataRequestOverrideForTests = { _, method, _ ->
-        check(method == "exec.approval.list")
-        requestStarted.complete(Unit)
-        throw CancellationException("approval gateway generation retired")
+      for (cancelledKind in GatewayApprovalKind.entries) {
+        val runtime = approvalRuntime(unifiedMethods + setOf("plugin.approval.list", "openclaw.approval.list"))
+        val requestStarted = CompletableDeferred<Unit>()
+        runtime.gatewayDataRequestOverrideForTests = { _, method, _ ->
+          check(method.endsWith(".approval.list"))
+          if (method == "${cancelledKind.eventPrefix}.approval.list") {
+            requestStarted.complete(Unit)
+            throw CancellationException("approval gateway generation retired")
+          }
+          """[{"id":"replacement","createdAtMs":200,"expiresAtMs":4000000000000}]"""
+        }
+
+        runtime.refreshExecApprovals()
+        withTimeout(2_000) { requestStarted.await() }
+        waitUntil { !runtime.execApprovalInbox.value.refreshing }
+
+        val retainedApproval =
+          runtime.execApprovalInbox.value.approvals
+            .single()
+        assertNull(runtime.execApprovalInbox.value.errorText)
+        assertEquals("approval-1", retainedApproval.id)
+        assertNull(retainedApproval.errorText)
+        invokeClearOperatorState(runtime, retirePendingRuns = true)
       }
-
-      runtime.refreshExecApprovals()
-      withTimeout(2_000) { requestStarted.await() }
-      waitUntil { !runtime.execApprovalInbox.value.refreshing }
-
-      val retainedApproval =
-        runtime.execApprovalInbox.value.approvals
-          .single()
-      assertNull(runtime.execApprovalInbox.value.errorText)
-      assertEquals("approval-1", retainedApproval.id)
-      assertNull(retainedApproval.errorText)
     }
 
   @Test
