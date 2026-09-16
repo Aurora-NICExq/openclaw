@@ -127,7 +127,12 @@ internal class CloudflareAccessSessionStore(
       synchronized(lock) {
         val origin = application.origin
         requireAdmission(origin, admissionCheckpoint)
-        attempts[origin]?.let { return@synchronized it.task }
+        attempts[origin]?.let {
+          // A failed Deferred can be observable before its completion handler takes
+          // this monitor. Retry must replace it, not coalesce onto a terminal failure.
+          if (!it.task.isCompleted) return@synchronized it.task
+          completeFailedAttempt(origin, it.id)
+        }
         val id = UUID.randomUUID()
         val task =
           scope.async(start = CoroutineStart.LAZY) {
@@ -158,21 +163,19 @@ internal class CloudflareAccessSessionStore(
                 snapshot
               }
             } catch (error: Exception) {
-              synchronized(lock) {
-                if (attempts[origin]?.id == id) {
-                  attempts.remove(origin)
-                  setState(origin, State.ReauthenticationRequired)
-                }
-              }
+              completeFailedAttempt(origin, id)
               throw error
             }
           }
         attempts[origin] = Attempt(id, task)
         setState(origin, State.SigningIn)
+        // Register after publication: an already-cancelled scope invokes this immediately.
+        // This fallback covers cancellation that skips the body and its earlier cleanup.
+        task.invokeOnCompletion { error -> if (error != null) completeFailedAttempt(origin, id) }
         task
       }
-    // Unconfined starts and cancellation handlers can run inline. Never execute
-    // them while holding the state monitor or a consumer publication lock.
+    // Unconfined authentication and caller completion handlers may reenter ingress.
+    // Start after releasing the state monitor and any consumer publication lock.
     task.start()
     return task
   }
@@ -257,6 +260,18 @@ internal class CloudflareAccessSessionStore(
     val retirement = Retirement(id, origin, lifecycle.getValue(origin).transitionRevision, task, supersededAttempt)
     retirements[origin] = retirement
     return retirement
+  }
+
+  private fun completeFailedAttempt(
+    origin: CloudflareAccessOrigin,
+    id: UUID,
+  ) {
+    synchronized(lock) {
+      if (attempts[origin]?.id == id) {
+        attempts.remove(origin)
+        setState(origin, State.ReauthenticationRequired)
+      }
+    }
   }
 
   private fun checkAttempt(
