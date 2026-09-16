@@ -3,6 +3,7 @@ import { listAgentRoles } from "../agents/agent-roles.js";
 import { parseConfigSetPath } from "../cli/config-cli-path.js";
 import type { ConfigSetOptions } from "../cli/config-set-input.js";
 import type { DoctorOptions } from "../commands/doctor.types.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { DEFAULT_SECRET_PROVIDER_ALIAS } from "../config/types.secrets.js";
 import { normalizeAgentIdStrict } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -54,6 +55,7 @@ export type SystemAgentCommandDeps = {
     value?: string;
     cliOptions: ConfigSetOptions;
     beforePersistentApply?: () => void;
+    preCommitRuntimePreflight?: (sourceConfig: OpenClawConfig) => Promise<void>;
   }) => Promise<void>;
   runDoctor?: (runtime: RuntimeEnv, options: DoctorOptions) => Promise<void>;
   runGatewayRestart?: () => Promise<void | boolean>;

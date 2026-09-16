@@ -152,25 +152,15 @@ Doctor repairs are unavailable inside OpenClaw because they can rewrite the prov
 
 New agents inherit the live-verified default inference route. The agent ids `openclaw` and `crestodian` are reserved for the system agent and cannot be created as normal agents. The retired id remains blocked so an old config cannot claim it.
 
-`config set` and `config set-ref` can change any setting a user can change,
-with a short human-only denylist: `$include`, `auth.*`, `env.*`, `models.*`,
-and `secrets.*` stay refused because they carry credential material,
-alternate-config inclusion, or the provider/catalog definitions that feed
-inference routing. Inference routing itself is also protected: default model
-routes (`agents.defaults` model/params/runtime fields) and the routing fields
-of whichever agent backs the active default route are refused, as are agent
-identity/topology fields (`id`, `agentDir`, `default`). Routing fields for
-other agents remain writable behind approval. Gateway and channel auth remain
-normal config surfaces. Use `set default model <provider/model>` for an
-already configured route; it live-tests the route before saving it. To
-configure or repair provider/auth access, exit OpenClaw and run
-`openclaw onboard`.
+`config set` and `config set-ref` propose config changes for approval. Approved
+writes are validated against the schema before saving. A write that changes the
+default inference route also runs a live inference test on the config to be saved.
+If validation fails, the write is not applied and the assistant receives the errors
+to propose a fix. Secrets use `config set-ref`, never plaintext.
+`set default model <provider/model>` remains the shortcut for switching models.
 
-`plugins.entries.<id>.*` writes (enable/disable/config of installed plugins)
-are allowed unless that plugin backs the active inference route. Plugin
-install sources and load policy keep their trust boundary in the typed
-plugin-install workflow. Plugin uninstall of the route-backing plugin is
-refused for the same reason; exit OpenClaw and run
+Plugin installation keeps its source restrictions. Plugin uninstall refuses a
+plugin that backs the active inference route; exit OpenClaw and run
 `openclaw plugins uninstall <id>` from a terminal.
 
 Approval is given in your own words: unambiguous replies ("yes", "sure", "go ahead", "not now") resolve from a closed deterministic list. When the configured route supports a separate completion call, other replies can be classified from only your message and the pending proposal — never by the conversation model itself, which cannot self-approve. Unclassified or ambiguous replies keep the proposal pending and the conversation asks again.
