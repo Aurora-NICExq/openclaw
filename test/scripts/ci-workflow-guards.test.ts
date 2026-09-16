@@ -6637,6 +6637,7 @@ setImmediate(() => {
     } as const;
     const expectedHybridFirstAttemptRunners = {
       ...expectedHostedRunners,
+      preflight: "blacksmith-16vcpu-ubuntu-2404",
       "security-fast": "blacksmith-4vcpu-ubuntu-2404",
       android: "blacksmith-8vcpu-ubuntu-2404",
       "build-artifacts": "blacksmith-16vcpu-ubuntu-2404",
