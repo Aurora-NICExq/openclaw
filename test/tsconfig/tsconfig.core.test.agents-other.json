@@ -13,6 +13,8 @@
     "../../node_modules",
     "../../dist",
     "../../**/dist/**",
+    "../../src/agents/auth-profiles/**/*.test.ts",
+    "../../src/agents/auth-profiles/**/*.test.tsx",
     "../../src/agents/command/**/*.test.ts",
     "../../src/agents/command/**/*.test.tsx",
     "../../src/agents/sandbox/**/*.test.ts",
