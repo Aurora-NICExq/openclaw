@@ -100,7 +100,7 @@ function fixture() {
       repository: {
         ...repo,
         id: repoAuthority.node_id,
-        databaseId: repoAuthority.id,
+        databaseId: repo.id,
         ref: { target: { oid: landed } },
         pullRequest: {
           id: record.prId,
@@ -126,11 +126,15 @@ function fixture() {
     gh,
     `#!/bin/sh
 printf '%s\\t%s\\n' "$(git rev-parse --show-toplevel)" "$*" >> '${calls}'
-case "$*" in
-  "repo view "*) printf '%s\\n' '${JSON.stringify(repo)}' ;;
-  "api --hostname github.com repos/fixture/repo -H Cache-Control: max-age=0") printf '%s\\n' '${JSON.stringify(repoAuthority)}' ;;
-  "api graphql "*) printf '%s\\n' '${JSON.stringify(response)}' ;;
-  "pr view "*)
+case "$1 $2" in
+  "repo view") printf '%s\\n' '${JSON.stringify(repo)}' ;;
+  "api --hostname")
+    [ "$*" = 'api --hostname github.com repos/fixture/repo -H Cache-Control: max-age=0' ] || {
+      echo "Unexpected GitHub operation: $*" >&2; exit 99;
+    }
+    printf '%s\\n' '${JSON.stringify(repoAuthority)}' ;;
+  "api graphql") printf '%s\\n' '${JSON.stringify(response)}' ;;
+  "pr view")
     if [ "$(git rev-parse --show-toplevel)" = '${owner}' ]; then
       printf '%s\\n' '{"baseRefName":"owner-release","headRefOid":""}'
     else
