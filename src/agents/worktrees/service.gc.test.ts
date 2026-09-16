@@ -522,6 +522,66 @@ describe("ManagedWorktreeService garbage collection", () => {
     }
   });
 
+  it.each([
+    { stage: "idle", protectAfterRemoval: false },
+    { stage: "idle", protectAfterRemoval: true },
+    { stage: "limits", protectAfterRemoval: false },
+    { stage: "limits", protectAfterRemoval: true },
+  ] as const)(
+    "reports $stage contention according to actual checkout removal ($protectAfterRemoval)",
+    async ({ stage, protectAfterRemoval }) => {
+      const created = await materializeRunOwnedFixture("removal-boundary", "session", "owner");
+      const head = await git(created.path, "rev-parse", "HEAD");
+      await fs.writeFile(path.join(created.path, "local.txt"), "preserve completed snapshot\n");
+      if (stage === "idle") {
+        now += IDLE_GC_MS + 1;
+      }
+      let protectedOwner = false;
+      let removalCompleted = false;
+      const runGit = worktreeGit.runGit;
+      vi.spyOn(worktreeGit, "runGit").mockImplementation(async (cwd, args, options) => {
+        if (args[0] !== "worktree" || args[1] !== "remove" || !args.includes(created.path)) {
+          return await runGit(cwd, args, options);
+        }
+        if (!protectAfterRemoval) {
+          protectedOwner = true;
+        }
+        const result = await runGit(cwd, args, options);
+        if (result.code === 0) {
+          removalCompleted = true;
+          protectedOwner = true;
+        }
+        return result;
+      });
+
+      const result = await service.gc({
+        ...(stage === "limits" ? { limits: { maxCount: 0 } } : {}),
+        shouldProtectOwner: () => protectedOwner,
+      });
+
+      expect(removalCompleted).toBe(protectAfterRemoval);
+      expect(result).toMatchObject({
+        removed: [],
+        outcome: protectAfterRemoval ? "partial" : "deferred",
+        issues: [{ stage, outcome: protectAfterRemoval ? "failed" : "deferred", count: 1 }],
+      });
+      const record = getRegistryWorktree(env, created.id);
+      expect(record).toBeDefined();
+      expect(record?.removedAt).toBeUndefined();
+      const recoveryRef = `refs/openclaw/removals/${created.id}`;
+      expect(await git(repo, "rev-parse", `${recoveryRef}^`)).toBe(head);
+      expect(await git(repo, "show", `${recoveryRef}:local.txt`)).toBe(
+        "preserve completed snapshot",
+      );
+      expect(await git(repo, "rev-parse", `refs/heads/${created.branch}`)).toBe(head);
+      if (protectAfterRemoval) {
+        await expect(fs.stat(created.path)).rejects.toMatchObject({ code: "ENOENT" });
+      } else {
+        await expect(fs.stat(created.path)).resolves.toBeDefined();
+      }
+    },
+  );
+
   it("counts a competing removal instead of evicting an extra worktree", async () => {
     const oldest = await materializeRunOwnedFixture(
       "race-oldest",
