@@ -302,6 +302,67 @@ defineDiscordVoiceTests(
       }
     });
 
+    it.each(["native", "fallback"] as const)(
+      "retains a %s answer that finishes while the old provider closes",
+      async (path) => {
+        if (path === "native") {
+          useNativeVoices();
+        } else {
+          useGoogleVoices();
+        }
+        const answer = createDeferred<{ payloads: Array<{ text: string }> }>();
+        const closing = createDeferred<void>();
+        const finishClose = createDeferred<void>();
+        agentCommandMock.mockReturnValueOnce(answer.promise);
+        const { entry, manager } = await createJoinedAgentProxyFixture(
+          path === "fallback"
+            ? { config: { voice: { realtime: { toolPolicy: "none", debounceMs: 0 } } } }
+            : {},
+        );
+        let consultation: Promise<{ text: string }> | undefined;
+        let switching: Promise<void> | undefined;
+        try {
+          beginSpeakerTurn(entry).close();
+          const original = lastRealtimeBridge();
+          if (path === "native") {
+            consultation = original.bridgeParams.runAgentConsult!({ prompt: "Check the agenda." });
+          } else {
+            await emitFinalRealtimeUserTranscript(original.bridgeParams, "Check the agenda.");
+          }
+          await vi.waitFor(() => expect(agentCommandMock).toHaveBeenCalledOnce());
+          original.session.close.mockImplementationOnce(async () => {
+            closing.resolve();
+            await finishClose.promise;
+          });
+          switching = selectionOwner().changeVoice(path === "native" ? "cedar" : "Kore", {
+            assertCurrent: () => {},
+          });
+          await closing.promise;
+          const replacement = lastRealtimeBridge();
+          answer.resolve({ payloads: [{ text: "The agenda is ready." }] });
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(sentUserMessages(original.session)).toHaveLength(0);
+          expect(sentUserMessages(replacement.session)).toHaveLength(0);
+          finishClose.resolve();
+          await switching;
+          await consultation;
+          await vi.waitFor(() =>
+            expect(sentUserMessages(replacement.session)).toEqual([
+              expect.stringContaining("The agenda is ready."),
+            ]),
+          );
+          expect(agentCommandMock).toHaveBeenCalledOnce();
+          expect(original.session.submitToolResult).not.toHaveBeenCalled();
+        } finally {
+          finishClose.resolve();
+          answer.resolve({ payloads: [] });
+          await switching;
+          await consultation;
+          await manager.destroy();
+        }
+      },
+    );
+
     it.each([false, true])(
       "hands unspoken answers to the new voice in order (playback started=%s)",
       async (playbackStarted) => {

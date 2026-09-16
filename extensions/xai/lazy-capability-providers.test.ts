@@ -1006,62 +1006,115 @@ describe("xAI lazy capability providers", () => {
   });
 
   it.each([
-    { reconnect: false, closeDuringLoad: false },
-    { reconnect: true, closeDuringLoad: false },
-    { reconnect: false, closeDuringLoad: true },
-  ])(
-    "joins disposal and final transcripts (reconnect=$reconnect, closeDuringLoad=$closeDuringLoad)",
-    async ({ reconnect, closeDuringLoad }) => {
+    { reconnect: false, closeAt: "connected" },
+    { reconnect: true, closeAt: "connected" },
+    { reconnect: false, closeAt: "loading" },
+    { reconnect: false, closeAt: "construction" },
+    { reconnect: true, closeAt: "construction" },
+    { reconnect: true, closeAt: "provider-terminal" },
+  ] as const)(
+    "joins disposal and final transcripts (reconnect=$reconnect, closeAt=$closeAt)",
+    async ({ reconnect, closeAt }) => {
       const disposed = createDeferred<void>();
-      runtimeMocks.voiceClose.mockReturnValueOnce(disposed.promise);
+      const ready = createDeferred<void>();
+      const createBridge = runtimeMocks.createVoiceBridge.getMockImplementation();
+      if (!createBridge) {
+        throw new Error("The voice fixture has no bridge factory");
+      }
+      const firstConnect = vi.fn(async () => {});
+      const firstClose = vi.fn(() => disposed.promise);
+      const replacementConnect = vi.fn(() => ready.promise);
       const onClose = vi.fn();
       const onTranscript = vi.fn();
       const bridge = await createLazyVoiceBridge({ onClose, onTranscript });
+      const providerTerminated = closeAt === "provider-terminal";
+      const constructing = closeAt === "construction" || providerTerminated;
+      const earlyReconnect = constructing && reconnect;
+      let closing: void | Promise<void> = undefined;
+      let reconnecting: Promise<void> | undefined;
+      runtimeMocks.createVoiceBridge
+        .mockImplementationOnce((request) => {
+          if (constructing) {
+            if (providerTerminated) {
+              request.onClose?.("error");
+            } else {
+              closing = bridge.close();
+            }
+            expect(firstClose).not.toHaveBeenCalled();
+            if (reconnect) {
+              reconnecting = bridge.connect();
+            }
+          }
+          return { ...createBridge(request), connect: firstConnect, close: firstClose };
+        })
+        .mockImplementationOnce((request) => ({
+          ...createBridge(request),
+          connect: replacementConnect,
+        }));
       const connecting = bridge.connect();
-      if (!closeDuringLoad) {
+      if (closeAt === "connected") {
         await connecting;
       }
-
-      const closing = bridge.close();
+      if (!constructing) {
+        closing = bridge.close();
+      }
+      if (providerTerminated) {
+        closing = connecting;
+      }
       try {
-        expect(bridge.close()).toBe(closing);
-        await vi.waitFor(() => expect(runtimeMocks.voiceClose).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(firstClose).toHaveBeenCalledOnce());
+        if (!earlyReconnect) {
+          expect(bridge.close()).toBe(closing);
+        }
         const firstRequest = runtimeMocks.createVoiceBridge.mock.calls[0]?.[0];
-        if (closeDuringLoad) {
-          expect(runtimeMocks.voiceConnect).not.toHaveBeenCalled();
+        if (closeAt !== "connected") {
+          expect(firstConnect).not.toHaveBeenCalled();
         }
         firstRequest?.onTranscript?.("assistant", "partial tail", false);
         firstRequest?.onTranscript?.("assistant", "final tail", true);
-        expect(onTranscript).toHaveBeenCalledExactlyOnceWith("assistant", "final tail", true);
+        expect(onTranscript.mock.calls).toEqual(
+          earlyReconnect ? [] : [["assistant", "final tail", true]],
+        );
         let settled = false;
         const completion = Promise.resolve(closing).then(() => {
           settled = true;
         });
-        bridge.sendAudio(Buffer.from([0x01]));
+        if (!earlyReconnect) {
+          bridge.sendAudio(Buffer.from([0x01]));
+        }
         await Promise.resolve();
         expect(settled).toBe(false);
-        expect(runtimeMocks.voiceClose).toHaveBeenCalledOnce();
         expect(runtimeMocks.voiceSendAudio).not.toHaveBeenCalled();
-        expect(onClose).not.toHaveBeenCalled();
+        expect(onClose.mock.calls).toEqual(providerTerminated ? [["error"]] : []);
 
         if (reconnect) {
-          await bridge.connect();
+          reconnecting ??= bridge.connect();
+          await vi.waitFor(() => expect(replacementConnect).toHaveBeenCalledOnce());
+          const joined = bridge.connect();
+          ready.resolve();
+          await Promise.all([reconnecting, joined]);
+          expect(runtimeMocks.createVoiceBridge).toHaveBeenCalledTimes(2);
           firstRequest?.onTranscript?.("assistant", "stale after reconnect", true);
         }
         disposed.resolve();
         await Promise.all([completion, connecting]);
         firstRequest?.onTranscript?.("assistant", "late after disposal", true);
-        expect(onTranscript).toHaveBeenCalledExactlyOnceWith("assistant", "final tail", true);
+        expect(onTranscript).toHaveBeenCalledTimes(earlyReconnect ? 0 : 1);
+        expect(firstClose).toHaveBeenCalledOnce();
         if (reconnect) {
-          expect(onClose).not.toHaveBeenCalled();
+          expect(onClose.mock.calls).toEqual(providerTerminated ? [["error"]] : []);
           bridge.sendAudio(Buffer.from([0x02]));
           expect(runtimeMocks.voiceSendAudio).toHaveBeenCalledExactlyOnceWith(Buffer.from([0x02]));
+          expect(runtimeMocks.voiceClose).not.toHaveBeenCalled();
           await bridge.close();
         }
-        expect(onClose).toHaveBeenCalledExactlyOnceWith("completed");
+        expect(onClose.mock.calls).toEqual(
+          providerTerminated ? [["error"], ["completed"]] : [["completed"]],
+        );
       } finally {
+        ready.resolve();
         disposed.resolve();
-        await Promise.all([closing, connecting]);
+        await Promise.allSettled([closing, connecting, reconnecting]);
         await bridge.close();
       }
     },

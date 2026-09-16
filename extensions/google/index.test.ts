@@ -814,7 +814,7 @@ describe("google provider plugin hooks", () => {
     const firstConnect = bridge.connect();
     const secondConnect = bridge.connect();
     const connectResults = Promise.allSettled([firstConnect, secondConnect]);
-    await vi.waitFor(() => expect(loaded.connect).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(loaded.connect).toHaveBeenCalledOnce());
     connecting.reject(failure);
 
     expect(await connectResults).toEqual([
@@ -874,69 +874,110 @@ describe("google provider plugin hooks", () => {
   });
 
   it.each([
-    { reconnect: false, closeDuringLoad: false },
-    { reconnect: true, closeDuringLoad: false },
-    { reconnect: false, closeDuringLoad: true },
-  ])(
-    "joins disposal and final transcripts (reconnect=$reconnect, closeDuringLoad=$closeDuringLoad)",
-    async ({ reconnect, closeDuringLoad }) => {
+    { reconnect: false, closeAt: "connected" },
+    { reconnect: true, closeAt: "connected" },
+    { reconnect: false, closeAt: "loading" },
+    { reconnect: false, closeAt: "construction" },
+    { reconnect: true, closeAt: "construction" },
+    { reconnect: true, closeAt: "provider-terminal" },
+  ] as const)(
+    "joins disposal and final transcripts (reconnect=$reconnect, closeAt=$closeAt)",
+    async ({ reconnect, closeAt }) => {
       const disposed = createDeferred<void>();
+      const ready = createDeferred<void>();
       const first = createMockRealtimeBridge();
       first.close.mockReturnValue(disposed.promise);
-      const replacement = createMockRealtimeBridge();
-      createRealtimeBridgeMock
-        .mockReturnValueOnce(first.bridge)
-        .mockReturnValueOnce(replacement.bridge);
+      const replacement = createMockRealtimeBridge(() => ready.promise);
       const onClose = vi.fn();
       const onTranscript = vi.fn();
       const { bridge } = createLazyRealtimeBridge(vi.fn(), undefined, onClose, { onTranscript });
+      const providerTerminated = closeAt === "provider-terminal";
+      const constructing = closeAt === "construction" || providerTerminated;
+      const earlyReconnect = constructing && reconnect;
+      let closing: void | Promise<void> = undefined;
+      let reconnecting: Promise<void> | undefined;
+      createRealtimeBridgeMock
+        .mockImplementationOnce((request) => {
+          if (constructing) {
+            if (providerTerminated) {
+              request.onClose?.("error");
+            } else {
+              closing = bridge.close();
+            }
+            expect(first.close).not.toHaveBeenCalled();
+            if (reconnect) {
+              reconnecting = bridge.connect();
+            }
+          }
+          return first.bridge;
+        })
+        .mockReturnValueOnce(replacement.bridge);
       const connecting = bridge.connect();
-      if (!closeDuringLoad) {
+      if (closeAt === "connected") {
         await connecting;
         signalRealtimeBridgeReady();
       }
-
-      const closing = bridge.close();
+      if (!constructing) {
+        closing = bridge.close();
+      }
+      if (providerTerminated) {
+        closing = connecting;
+      }
       try {
-        expect(bridge.close()).toBe(closing);
         await vi.waitFor(() => expect(first.close).toHaveBeenCalledOnce());
+        if (!earlyReconnect) {
+          expect(bridge.close()).toBe(closing);
+        }
         const firstRequest = createRealtimeBridgeMock.mock.calls[0]?.[0];
-        if (closeDuringLoad) {
+        if (closeAt !== "connected") {
           expect(first.connect).not.toHaveBeenCalled();
         }
         firstRequest?.onTranscript?.("assistant", "partial tail", false);
         firstRequest?.onTranscript?.("assistant", "final tail", true);
-        expect(onTranscript).toHaveBeenCalledExactlyOnceWith("assistant", "final tail", true);
+        expect(onTranscript.mock.calls).toEqual(
+          earlyReconnect ? [] : [["assistant", "final tail", true]],
+        );
         let settled = false;
         const completion = Promise.resolve(closing).then(() => {
           settled = true;
         });
-        bridge.sendAudio(Buffer.from([0x01]));
+        if (!earlyReconnect) {
+          bridge.sendAudio(Buffer.from([0x01]));
+        }
         await Promise.resolve();
         expect(settled).toBe(false);
-        expect(first.close).toHaveBeenCalledOnce();
         expect(first.sendAudio).not.toHaveBeenCalled();
-        expect(onClose).not.toHaveBeenCalled();
+        expect(onClose.mock.calls).toEqual(providerTerminated ? [["error"]] : []);
 
         if (reconnect) {
-          await bridge.connect();
+          reconnecting ??= bridge.connect();
+          await vi.waitFor(() => expect(replacement.connect).toHaveBeenCalledOnce());
+          const joined = bridge.connect();
+          ready.resolve();
+          await Promise.all([reconnecting, joined]);
+          expect(createRealtimeBridgeMock).toHaveBeenCalledTimes(2);
           signalRealtimeBridgeReady();
           firstRequest?.onTranscript?.("assistant", "stale after reconnect", true);
         }
         disposed.resolve();
         await Promise.all([completion, connecting]);
         firstRequest?.onTranscript?.("assistant", "late after disposal", true);
-        expect(onTranscript).toHaveBeenCalledExactlyOnceWith("assistant", "final tail", true);
+        expect(onTranscript).toHaveBeenCalledTimes(earlyReconnect ? 0 : 1);
+        expect(first.close).toHaveBeenCalledOnce();
         if (reconnect) {
-          expect(onClose).not.toHaveBeenCalled();
+          expect(onClose.mock.calls).toEqual(providerTerminated ? [["error"]] : []);
           bridge.sendAudio(Buffer.from([0x02]));
           expect(replacement.sendAudio).toHaveBeenCalledExactlyOnceWith(Buffer.from([0x02]));
+          expect(replacement.close).not.toHaveBeenCalled();
           await bridge.close();
         }
-        expect(onClose).toHaveBeenCalledExactlyOnceWith("completed");
+        expect(onClose.mock.calls).toEqual(
+          providerTerminated ? [["error"], ["completed"]] : [["completed"]],
+        );
       } finally {
+        ready.resolve();
         disposed.resolve();
-        await Promise.all([closing, connecting]);
+        await Promise.allSettled([closing, connecting, reconnecting]);
         await bridge.close();
       }
     },
