@@ -9162,6 +9162,9 @@ describe("package artifact reuse", () => {
       expect(jobNeeds(job)).toEqual(["resolve_target", "evidence_reuse"]);
     }
     expect(jobNeeds(qualify)).toEqual(["resolve_target", "prepare_npm_package"]);
+    expect(qualify.if).toBe(
+      "${{ always() && inputs.rerun_group == 'all' && needs.prepare_npm_package.result == 'success' }}",
+    );
     expect(qualify.env?.ARTIFACT_RUN_ID).toBe("${{ needs.prepare_npm_package.outputs.run_id }}");
     expect(workflowStepById(prepare, "bundle").env?.ARTIFACT_OUTPUT).toBe("raw");
     expect(qualify.env?.ARTIFACT_OUTPUT).toBe("receipt");
