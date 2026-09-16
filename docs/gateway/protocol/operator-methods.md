@@ -176,6 +176,10 @@ During metadata preparation, a request can use its agent's ready command list an
 model projection while other agents are still preparing. Shared model or account
 replacement still gates these reads; metadata refresh completion waits for all
 agents.
+Saved-session metadata stays current across unrelated session writes. Before
+publishing, the Gateway rechecks the selected session's identity and canonical
+metadata, runtime configuration, and current access authority. Recreating a row
+with identical session facts does not invalidate the read.
 The Models settings page uses `preparedOnly: true` for its initial load, then
 requests `refresh: true` the first time a primary, utility, or fallback model
 picker opens for the current core-data snapshot. Pending opens share that page's request; completed reopens read the
