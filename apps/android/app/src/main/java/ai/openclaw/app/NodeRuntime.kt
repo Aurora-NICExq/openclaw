@@ -1018,6 +1018,8 @@ class NodeRuntime private constructor(
     // Captured at registration: canonical readback needs it after a refresh has
     // already replaced the visible rows, or the legacy get parse drops the row.
     val createdAtMs: Long?,
+    val kind: GatewayApprovalKind,
+    val sessionKey: String?,
   ) {
     @Volatile var requestInFlight: Boolean = true
   }
@@ -1546,6 +1548,7 @@ class NodeRuntime private constructor(
   internal val execApprovalInbox: StateFlow<GatewayExecApprovalInboxState> = mutableExecApprovalInbox.asStateFlow()
   private val execApprovalsRefreshSeq = AtomicLong(0)
   private val execApprovalsStateLock = Any()
+  private var execApprovalExpiryJob: Job? = null
   private var execApprovalsSnapshotReady = false
   private val resolvedExecApprovalIds = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
   private val pendingExecApprovalWrites = mutableMapOf<String, PendingExecApprovalWrite>()
@@ -1983,6 +1986,8 @@ class NodeRuntime private constructor(
     resolvedExecApprovalIds.clear()
     synchronized(execApprovalsStateLock) {
       execApprovalsSnapshotReady = false
+      execApprovalExpiryJob?.cancel()
+      execApprovalExpiryJob = null
       if (retirePendingCronRuns) {
         pendingExecApprovalWrites.clear()
       }
@@ -3197,6 +3202,9 @@ class NodeRuntime private constructor(
     replaceGatewayMethods(
       buildSet {
         add(GatewayMethod.DesktopObserve.rawValue)
+        if (AndroidScreenshotFixture.attentionEnabled) {
+          addAll(listOf("approval.get", "approval.resolve", "exec.approval.list", "plugin.approval.list", "openclaw.approval.list"))
+        }
         if (screenshotBranchesEnabled) {
           add("sessions.branches.list")
           add("sessions.branches.switch")
@@ -3246,6 +3254,12 @@ class NodeRuntime private constructor(
     }
     systemAgentChatController.refresh(startIfNeeded = false)
     chat.refreshSessions(limit = 20)
+    if (AndroidScreenshotFixture.attentionEnabled) {
+      connectedEndpoint = GatewayEndpoint(AndroidScreenshotFixture.gatewayId, "Screenshot fixture", "127.0.0.1", 18789)
+      val pending = json.parseToJsonElement(screenshotRequester("question.list", "{}")).asObjectOrNull()?.get("questions") as? JsonArray
+      pending?.forEach { chat.handleGatewayEvent("question.requested", it.toString()) }
+      scope.launch { refreshExecApprovalsFromGateway() }
+    }
   }
 
   private fun parseScreenshotCronJobs(): List<GatewayCronJobSummary> {
@@ -6111,9 +6125,12 @@ class NodeRuntime private constructor(
     event: String,
     payloadJson: String?,
   ) {
+    val kind = GatewayApprovalKind.entries.firstOrNull { event.startsWith("${it.eventPrefix}.approval.") } ?: return
     when (event) {
-      "exec.approval.requested" -> {
+      "exec.approval.requested", "plugin.approval.requested", "openclaw.approval.requested" -> {
+        if (kind != GatewayApprovalKind.Exec && captureGatewayMethods().approvalRpcFamily != GatewayApprovalRpcFamily.Canonical) return
         val approvalId = parseExecApprovalEventId(payloadJson)
+        val discovered = payloadJson?.let { runCatching { parseGatewayExecApprovalListEntry(json.parseToJsonElement(it), kind) }.getOrNull() }
         approvalId?.let { id ->
           resolvedExecApprovalIds.remove(id)
           synchronized(execApprovalsStateLock) {
@@ -6126,12 +6143,12 @@ class NodeRuntime private constructor(
           if (approvalId == null) {
             refreshExecApprovalsFromGateway()
           } else {
-            refreshExecApprovalFromGateway(approvalId)
+            refreshExecApprovalFromGateway(approvalId, discovered)
           }
         }
       }
 
-      "exec.approval.resolved" -> {
+      "exec.approval.resolved", "plugin.approval.resolved", "openclaw.approval.resolved" -> {
         val approvalId = parseExecApprovalEventId(payloadJson) ?: return
         val methodsSnapshot = captureGatewayMethods()
         when (methodsSnapshot.approvalRpcFamily) {
@@ -6211,7 +6228,8 @@ class NodeRuntime private constructor(
   ): String {
     gatewayDataRequestTimeoutObserverForTests?.invoke(method, timeoutMs)
     val response =
-      gatewayDataRequestOverrideForTests?.invoke(gatewayScope.stableId, method, paramsJson)
+      (if (mode == NodeRuntimeMode.ScreenshotFixture) screenshotRequester(method, paramsJson) else null)
+        ?: gatewayDataRequestOverrideForTests?.invoke(gatewayScope.stableId, method, paramsJson)
         ?: operatorSession.requestForEndpoint(gatewayScope.stableId, method, paramsJson, timeoutMs)
     if (!isGatewayDataScopeCurrent(gatewayScope)) throw CancellationException("gateway scope changed")
     return response
@@ -8404,13 +8422,19 @@ class NodeRuntime private constructor(
       return
     }
     try {
-      // TODO(#103505): replace legacy full-request discovery with the sanitized
-      // session approval lifecycle projection before removing this list seam.
-      val res = requestGatewayData(gatewayScope, "exec.approval.list", "{}")
+      // Global discovery supplies only attribution. Display and decision permissions
+      // always come from the canonical reviewer projection.
+      val discovered = mutableListOf<GatewayExecApprovalSummary>()
+      for (kind in GatewayApprovalKind.entries) {
+        val method = "${kind.eventPrefix}.approval.list"
+        if (kind != GatewayApprovalKind.Exec && (captureGatewayMethods().approvalRpcFamily != GatewayApprovalRpcFamily.Canonical || gatewayAdvertisesMethod(method) != true)) continue
+        val res = requestGatewayData(gatewayScope, method, "{}")
+        discovered += parseGatewayExecApprovalListPayload(res, json, kind)
+      }
       val existing = mutableExecApprovalInbox.value.approvals.associateBy { it.id }
       val terminalApprovals = mutableListOf<GatewayExecApprovalSnapshot.Terminal>()
       val rows =
-        parseGatewayExecApprovalListPayload(res, json)
+        discovered
           .filterNot { it.id in resolvedExecApprovalIds }
           .mapNotNull { row ->
             val methodsSnapshot = captureGatewayMethods()
@@ -8432,7 +8456,10 @@ class NodeRuntime private constructor(
               return@mapNotNull null
             }
             val hydrated =
-              (lookup as? GatewayExecApprovalSnapshot.Pending)?.summary
+              (lookup as? GatewayExecApprovalSnapshot.Pending)
+                ?.summary
+                ?.takeIf { it.kind == row.kind }
+                ?.copy(sessionKey = row.sessionKey ?: existing[row.id]?.sessionKey)
                 ?: row.copy(errorText = execApprovalLoadDetailsFailureMessage())
             val current = existing[row.id]
             val pendingWrite = pendingExecApprovalWrite(row.id, gatewayScope.stableId)
@@ -8478,7 +8505,10 @@ class NodeRuntime private constructor(
     reconcilePendingExecApprovalWrites(gatewayScope)
   }
 
-  private suspend fun refreshExecApprovalFromGateway(id: String) {
+  private suspend fun refreshExecApprovalFromGateway(
+    id: String,
+    discovered: GatewayExecApprovalSummary? = null,
+  ) {
     val gatewayScope = captureGatewayDataScope() ?: return
     if (!operatorConnected) return
     if (id in resolvedExecApprovalIds) return
@@ -8490,16 +8520,18 @@ class NodeRuntime private constructor(
           gatewayScope = gatewayScope,
           methodsSnapshot = methodsSnapshot,
           id = id,
-          createdAtMs = current?.createdAtMs ?: System.currentTimeMillis(),
+          createdAtMs = current?.createdAtMs ?: discovered?.createdAtMs ?: System.currentTimeMillis(),
         )
       when (lookup) {
         is GatewayExecApprovalSnapshot.Pending -> {
+          if (discovered != null && lookup.summary.kind != discovered.kind) return
           publishGatewayApprovalData(gatewayScope, methodsSnapshot) {
             if (id !in resolvedExecApprovalIds) {
               invalidateExecApprovalRefreshes()
               val pendingWrite = pendingExecApprovalWrite(id, gatewayScope.stableId)
               upsertExecApproval(
                 lookup.summary.copy(
+                  sessionKey = discovered?.sessionKey ?: current?.sessionKey ?: lookup.summary.sessionKey,
                   resolvingDecision = current?.resolvingDecision ?: pendingWrite?.decision,
                   errorText =
                     current?.errorText
@@ -8583,6 +8615,13 @@ class NodeRuntime private constructor(
           if (!operatorConnected || id in resolvedExecApprovalIds) return@synchronized
           val currentRows = mutableExecApprovalInbox.value.approvals
           if (currentRows.none { it.id == id && it.resolvingDecision == null }) return@synchronized
+          val selected = currentRows.first { it.id == id }
+          if (methodsSnapshot.approvalRpcFamily == GatewayApprovalRpcFamily.Unavailable) {
+            mutableExecApprovalInbox.update { inbox -> inbox.copy(approvals = inbox.approvals.map { if (it.id == id) it.copy(errorText = execApprovalResolveFailureMessage()) else it }) }
+            return@synchronized
+          }
+          if (decision !in selected.allowedDecisions || decision in selected.externalResolutionDecisions || selected.isExpiredExecApproval()) return@synchronized
+          if (selected.kind != GatewayApprovalKind.Exec && methodsSnapshot.approvalRpcFamily != GatewayApprovalRpcFamily.Canonical) return@synchronized
           if (pendingExecApprovalWrites.containsKey(id)) return@synchronized
           val pendingWrite =
             PendingExecApprovalWrite(
@@ -8590,6 +8629,8 @@ class NodeRuntime private constructor(
               id,
               decision,
               currentRows.firstOrNull { it.id == id }?.createdAtMs,
+              selected.kind,
+              selected.sessionKey,
             )
           pendingExecApprovalWrites[id] = pendingWrite
           registeredWrite = pendingWrite
@@ -8610,7 +8651,7 @@ class NodeRuntime private constructor(
     val pendingWrite = registeredWrite
     if (!scopeCurrent || pendingWrite == null) return
     try {
-      val resolution = submitExecApprovalResolution(gatewayScope, methodsSnapshot, id, decision)
+      val resolution = submitExecApprovalResolution(gatewayScope, methodsSnapshot, id, decision, pendingWrite.kind)
       markExecApprovalWriteRequestFinished(pendingWrite)
       publishGatewayApprovalData(gatewayScope, methodsSnapshot) {
         synchronized(execApprovalsStateLock) {
@@ -8676,10 +8717,11 @@ class NodeRuntime private constructor(
     methodsSnapshot: GatewayMethodsSnapshot,
     id: String,
     decision: String,
+    kind: GatewayApprovalKind,
   ): GatewayExecApprovalResolution =
     when (methodsSnapshot.approvalRpcFamily) {
       GatewayApprovalRpcFamily.Canonical -> {
-        val params = buildGatewayExecApprovalResolveParams(id, decision).toString()
+        val params = buildGatewayExecApprovalResolveParams(id, decision, kind).toString()
         val response =
           requestGatewayApprovalData(
             gatewayScope = gatewayScope,
@@ -8842,6 +8884,7 @@ class NodeRuntime private constructor(
             pendingExecApprovalWrites.remove(pendingWrite.id)
             val row =
               snapshot.summary.copy(
+                sessionKey = pendingWrite.sessionKey ?: snapshot.summary.sessionKey,
                 resolvingDecision = null,
                 errorText = execApprovalStillPendingMessage(),
               )
@@ -8946,6 +8989,7 @@ class NodeRuntime private constructor(
             rows.map { current ->
               if (current.id == row.id) {
                 row.copy(
+                  sessionKey = row.sessionKey ?: current.sessionKey,
                   resolvingDecision = current.resolvingDecision ?: row.resolvingDecision,
                   errorText = current.errorText ?: row.errorText,
                 )
@@ -8982,6 +9026,7 @@ class NodeRuntime private constructor(
       mutableExecApprovalInbox.update { inbox ->
         inbox.copy(approvals = inbox.approvals.filterNot { it.id == id }, refreshing = false, notice = notice ?: inbox.notice)
       }
+      scheduleExecApprovalExpiryPrune(mutableExecApprovalInbox.value.approvals)
     }
   }
 
@@ -9016,17 +9061,21 @@ class NodeRuntime private constructor(
   }
 
   private fun scheduleExecApprovalExpiryPrune(rows: List<GatewayExecApprovalSummary>) {
+    execApprovalExpiryJob?.cancel()
+    execApprovalExpiryJob = null
     val now = System.currentTimeMillis()
     val nextExpiry = rows.mapNotNull { it.expiresAtMs }.filter { it > now }.minOrNull() ?: return
-    scope.launch {
-      delay((nextExpiry - now + 250).coerceAtLeast(0))
-      pruneExpiredExecApprovals()
-    }
+    execApprovalExpiryJob =
+      scope.launch {
+        delay((nextExpiry - now + 250).coerceAtLeast(0))
+        pruneExpiredExecApprovals()
+      }
   }
 
   private fun pruneExpiredExecApprovals() {
     synchronized(execApprovalsStateLock) {
       mutableExecApprovalInbox.update { it.copy(approvals = it.approvals.filterActiveExecApprovals()) }
+      scheduleExecApprovalExpiryPrune(mutableExecApprovalInbox.value.approvals)
     }
   }
 
