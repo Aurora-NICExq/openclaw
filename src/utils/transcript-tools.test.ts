@@ -18,19 +18,40 @@ describe("transcript-tools", () => {
           { type: "tool_call", name: "write" },
         ],
       });
-      expect(new Set(names)).toEqual(new Set(["read", "exec", "write"]));
+      expect(names).toEqual(["read", "exec", "write"]);
     });
 
-    it("normalizes type and trims names; de-dupes", () => {
+    it.each([
+      ["distinct IDs", "call-1", "call-2"],
+      ["reused IDs", "call-1", "call-1"],
+      ["missing IDs", undefined, undefined],
+    ])("counts repeated names with %s after the top-level mirror", (_label, firstId, secondId) => {
       const names = extractToolCallNames({
         content: [
-          { type: " TOOL_CALL ", name: "  read " },
-          { type: "tool_call", name: "read" },
+          { type: " TOOL_CALL ", id: firstId, name: "  read " },
+          { type: "tool_call", id: secondId, name: "read" },
           { type: "tool_call", name: "" },
         ],
         toolName: "read",
       });
-      expect(names).toEqual(["read"]);
+      expect(names).toEqual(["read", "read"]);
+    });
+
+    it("preserves top-level alias precedence and skips only its first matching block", () => {
+      expect(
+        extractToolCallNames({
+          toolName: " write ",
+          tool_name: "ignored",
+          content: [
+            { type: "toolCall", name: "read" },
+            { type: "toolCall", name: "write" },
+            { type: "toolCall", name: "write" },
+          ],
+        }),
+      ).toEqual(["write", "read", "write"]);
+      expect(extractToolCallNames({ toolName: " ", tool_name: "ignored", content: [] })).toEqual(
+        [],
+      );
     });
   });
 

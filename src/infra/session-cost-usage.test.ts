@@ -24,6 +24,7 @@ import {
   readSessionCostUsageRollupRows,
   writeSessionCostUsageRollup,
 } from "./session-cost-usage-cache.sqlite.js";
+import type { SessionUsageRollupData } from "./session-cost-usage-rollup.js";
 import {
   discoverAllSessions as discoverAllSessionsForAgent,
   loadCostUsageSummary as loadCostUsageSummaryForAgent,
@@ -486,7 +487,11 @@ describe("session cost usage", () => {
             {
               message: {
                 role: "assistant",
-                content: "sqlite usage answer",
+                content: [
+                  { type: "text", text: "sqlite usage answer" },
+                  { type: "toolCall", id: "read-1", name: "read", arguments: {} },
+                  { type: "toolCall", id: "read-2", name: "read", arguments: {} },
+                ],
                 model: "gpt-5.4",
                 provider: "openai",
                 timestamp: now + 1000,
@@ -550,6 +555,13 @@ describe("session cost usage", () => {
           });
           expect(bulk.cacheStatus.status).toBe("fresh");
           expect(bulk.summaries[0]?.totalTokens).toBe(18);
+          expect(bulk.summaries[0]?.messageCounts?.toolCalls).toBe(2);
+          expect(bulk.summaries[0]?.dailyMessageCounts?.[0]?.toolCalls).toBe(2);
+          expect(bulk.summaries[0]?.toolUsage).toEqual({
+            totalCalls: 2,
+            uniqueTools: 1,
+            tools: [{ name: "read", count: 2 }],
+          });
         },
         { interval: 10, timeout: 2_000 },
       );
@@ -1110,7 +1122,7 @@ describe("session cost usage", () => {
     });
   });
 
-  it("rebuilds obsolete pricing rollups and preserves untimestamped usage on append", async () => {
+  it("rebuilds obsolete rollups and preserves tool occurrences and untimestamped usage on append", async () => {
     const root = await makeSessionCostRoot("cost-cache-v8-untimestamped-upgrade");
     const sessionsDir = path.join(root, "agents", "main", "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
@@ -1122,6 +1134,10 @@ describe("session cost usage", () => {
         role: "assistant",
         provider: "openai",
         model: timestamp ? "gpt-5.5" : "glm-5",
+        content: [
+          { type: "toolCall", id: `${timestamp ?? "untimed"}-1`, name: "read", arguments: {} },
+          { type: "toolCall", id: `${timestamp ?? "untimed"}-2`, name: "read", arguments: {} },
+        ],
         usage: {
           input: totalTokens,
           output: 0,
@@ -1150,25 +1166,35 @@ describe("session cost usage", () => {
       });
       expect(current.cacheStatus.status).toBe("fresh");
 
-      const currentRow = requireValue(
-        readSessionCostUsageRollupRows("main").find((row) => row.key === sessionFile),
-        "expected current usage rollup",
-      );
-      const currentRollup = JSON.parse(currentRow.valueJson) as {
-        version: number;
-        rollup: { untimestamped: { totals: { totalTokens: number } } };
+      const writeLegacyRollup = async () => {
+        const currentRow = requireValue(
+          readSessionCostUsageRollupRows("main").find((row) => row.key === sessionFile),
+          "expected current usage rollup",
+        );
+        const currentRollup = JSON.parse(currentRow.valueJson) as {
+          version: number;
+          rollup: SessionUsageRollupData;
+        };
+        currentRollup.version = 4;
+        currentRollup.rollup.untimestamped.totals.totalTokens = 9_999;
+        for (const bucket of [
+          currentRollup.rollup.untimestamped,
+          ...Object.values(currentRollup.rollup.buckets),
+        ]) {
+          bucket.messageCounts.toolCalls = 1;
+          bucket.tools = [{ name: "read", count: 1 }];
+        }
+        expect(
+          await writeSessionCostUsageRollup({
+            agentId: "main",
+            rollupId: sessionFile,
+            previousValueJson: currentRow.valueJson,
+            valueJson: JSON.stringify(currentRollup),
+            updatedAt: currentRow.updatedAt + 1,
+          }),
+        ).toBe(true);
       };
-      currentRollup.version = 3;
-      currentRollup.rollup.untimestamped.totals.totalTokens = 9_999;
-      expect(
-        await writeSessionCostUsageRollup({
-          agentId: "main",
-          rollupId: sessionFile,
-          previousValueJson: currentRow.valueJson,
-          valueJson: JSON.stringify(currentRollup),
-          updatedAt: currentRow.updatedAt + 1,
-        }),
-      ).toBe(true);
+      await writeLegacyRollup();
 
       const rangeEndMs = Date.UTC(2026, 1, 5) + 24 * 60 * 60 * 1000 - 1;
       await refreshSessionCostUsageForTest(sessionFile);
@@ -1181,7 +1207,15 @@ describe("session cost usage", () => {
       });
       expect(rebuilt.cacheStatus.status).toBe("fresh");
       expect(rebuilt.summaries[0]?.totalTokens).toBe(20);
+      expect(rebuilt.summaries[0]?.messageCounts?.toolCalls).toBe(2);
+      expect(rebuilt.summaries[0]?.dailyMessageCounts?.[0]?.toolCalls).toBe(2);
+      expect(rebuilt.summaries[0]?.toolUsage).toEqual({
+        totalCalls: 2,
+        uniqueTools: 1,
+        tools: [{ name: "read", count: 2 }],
+      });
 
+      await writeLegacyRollup();
       await fs.appendFile(
         sessionFile,
         `${JSON.stringify(assistantEntry("2026-02-05T13:00:00.000Z", 5))}\n`,
@@ -1197,6 +1231,31 @@ describe("session cost usage", () => {
       });
       expect(appended.cacheStatus.status).toBe("fresh");
       expect(appended.summaries[0]?.totalTokens).toBe(25);
+      expect(appended.summaries[0]?.messageCounts?.toolCalls).toBe(4);
+      expect(appended.summaries[0]?.dailyMessageCounts?.[0]?.toolCalls).toBe(4);
+
+      await fs.appendFile(
+        sessionFile,
+        `${JSON.stringify(assistantEntry("2026-02-05T14:00:00.000Z", 5))}\n`,
+        "utf-8",
+      );
+      await refreshSessionCostUsageForTest(sessionFile);
+      const currentAppend = await loadSessionCostSummariesFromCache({
+        sessions: [session],
+        agentId: "main",
+        startMs: Date.UTC(2026, 1, 5),
+        endMs: rangeEndMs,
+        requestRefresh: false,
+      });
+      expect(currentAppend.cacheStatus.status).toBe("fresh");
+      expect(currentAppend.summaries[0]?.totalTokens).toBe(30);
+      expect(currentAppend.summaries[0]?.messageCounts?.toolCalls).toBe(6);
+      expect(currentAppend.summaries[0]?.dailyMessageCounts?.[0]?.toolCalls).toBe(6);
+      expect(currentAppend.summaries[0]?.toolUsage).toEqual({
+        totalCalls: 6,
+        uniqueTools: 1,
+        tools: [{ name: "read", count: 6 }],
+      });
 
       const appendedRow = requireValue(
         readSessionCostUsageRollupRows("main").find((row) => row.key === sessionFile),
@@ -1207,7 +1266,7 @@ describe("session cost usage", () => {
         rollup: { untimestamped: { totals: { totalTokens: number } } };
       };
       expect(appendedRollup.rollup.untimestamped.totals.totalTokens).toBe(1_000);
-      expect(appendedRollup.version).toBe(4);
+      expect(appendedRollup.version).toBe(5);
 
       const allTime = await loadSessionCostSummariesFromCache({
         sessions: [session],
@@ -1217,7 +1276,14 @@ describe("session cost usage", () => {
         includeUntimestamped: true,
         requestRefresh: false,
       });
-      expect(allTime.summaries[0]?.totalTokens).toBe(1_025);
+      expect(allTime.summaries[0]?.totalTokens).toBe(1_030);
+      expect(allTime.summaries[0]?.messageCounts?.toolCalls).toBe(8);
+      expect(allTime.summaries[0]?.dailyMessageCounts?.[0]?.toolCalls).toBe(6);
+      expect(allTime.summaries[0]?.toolUsage).toEqual({
+        totalCalls: 8,
+        uniqueTools: 1,
+        tools: [{ name: "read", count: 8 }],
+      });
     });
   });
 
@@ -1988,9 +2054,11 @@ describe("session cost usage", () => {
           provider: "openai",
           model: "gpt-5.4",
           stopReason: "error",
+          toolName: "weather",
           content: [
             { type: "text", text: "Checking" },
-            { type: "tool_use", name: "weather" },
+            { type: "toolCall", id: "weather-1", name: "weather", arguments: {} },
+            { type: "toolCall", id: "weather-2", name: "weather", arguments: {} },
             { type: "tool_result", is_error: true },
           ],
           usage: {
@@ -2014,13 +2082,16 @@ describe("session cost usage", () => {
       total: 2,
       user: 1,
       assistant: 1,
-      toolCalls: 1,
+      toolCalls: 2,
       toolResults: 1,
       errors: 2,
     });
-    expect(summary?.toolUsage?.totalCalls).toBe(1);
-    expect(summary?.toolUsage?.uniqueTools).toBe(1);
-    expect(summary?.toolUsage?.tools[0]?.name).toBe("weather");
+    expect(summary?.toolUsage).toEqual({
+      totalCalls: 2,
+      uniqueTools: 1,
+      tools: [{ name: "weather", count: 2 }],
+    });
+    expect(summary?.dailyMessageCounts?.[0]?.toolCalls).toBe(2);
     expect(summary?.modelUsage?.[0]?.provider).toBe("openai");
     expect(summary?.modelUsage?.[0]?.model).toBe("gpt-5.4");
     expect(summary?.durationMs).toBe(5 * 60 * 1000);
@@ -2045,6 +2116,7 @@ describe("session cost usage", () => {
     expect(quarterHourCounts[0]?.total).toBe(2);
     expect(quarterHourCounts[0]?.user).toBe(1);
     expect(quarterHourCounts[0]?.assistant).toBe(1);
+    expect(quarterHourCounts[0]?.toolCalls).toBe(2);
   });
 
   it("counts standalone tool-result messages without inflating message or tool-call totals", async () => {
