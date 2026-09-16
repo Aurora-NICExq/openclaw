@@ -27,7 +27,11 @@ import {
 const log = createSubsystemLogger("agents/worktrees");
 export const WORKTREE_TEMPLATE_DIRECTORY = ".templates";
 
-type CheckoutOptions = WorktreeFilesystemOptions & {
+export type WorktreeCheckoutBranch =
+  | { mode: "create"; name: string }
+  | { mode: "existing"; name: string };
+
+export type CheckoutOptions = WorktreeFilesystemOptions & {
   env: NodeJS.ProcessEnv;
   now: () => number;
   enabled: boolean;
@@ -36,13 +40,13 @@ type CheckoutOptions = WorktreeFilesystemOptions & {
   worktreeRoot: string;
   destination: string;
   base: string;
-  branch?: string;
+  branch?: WorktreeCheckoutBranch;
   /** Restore reuses a warm template, or materializes its snapshot after registration. */
   deferGitCheckout?: boolean;
   requireSpace: (cloneBytes?: number) => void;
 };
 
-type CheckoutResult = GitResult & { templateCloned?: true };
+export type CheckoutResult = GitResult & { templateCloned?: true };
 
 function assertOwned(options: WorktreeFilesystemOptions) {
   options.signal?.throwIfAborted();
@@ -302,6 +306,64 @@ async function prepareTemplate(options: CheckoutOptions) {
 
 /** Git owns registration, branches and indexes; the backend only materializes files. */
 export async function addManagedWorktree(options: CheckoutOptions): Promise<CheckoutResult> {
+  const branch = options.branch;
+  const existingRef = branch?.mode === "existing" ? `refs/heads/${branch.name}` : undefined;
+  // A caller-owned branch is an immutable seed, not permission to create/reset it.
+  // Validate before cache allocation; repeat at registration and return boundaries.
+  const existingCommit = existingRef
+    ? await requireGit(
+        options.repoRoot,
+        ["rev-parse", "--verify", `${options.base}^{commit}`],
+        gitOptions(options),
+      )
+    : undefined;
+  const assertExistingSeed = async (stage: "before" | "registered" = "before") => {
+    if (!existingRef) {
+      return;
+    }
+    const actual = await requireGit(
+      options.repoRoot,
+      ["rev-parse", "--verify", existingRef],
+      gitOptions(options),
+    );
+    if (actual !== existingCommit) {
+      throw new Error(
+        "Caller-owned worktree branch moved; preserve it and retry with its current commit.",
+      );
+    }
+    if (stage === "registered") {
+      const head = await requireGit(
+        options.destination,
+        ["rev-parse", "HEAD"],
+        gitOptions(options),
+      );
+      const ref = await requireGit(
+        options.destination,
+        ["symbolic-ref", "HEAD"],
+        gitOptions(options),
+      );
+      if (head !== existingCommit || ref !== existingRef) {
+        throw new Error("Caller-owned worktree HEAD changed; preserve the checkout for recovery.");
+      }
+    } else if (stage === "before") {
+      const worktrees = await requireGit(
+        options.repoRoot,
+        ["worktree", "list", "--porcelain", "-z"],
+        gitOptions(options),
+      );
+      if (worktrees.split("\0").includes(`branch ${existingRef}`)) {
+        throw new Error(
+          "Caller-owned branch is already checked out; preserve its existing worktree.",
+        );
+      }
+    }
+  };
+  if (existingRef) {
+    await requireGit(options.repoRoot, ["check-ref-format", existingRef], gitOptions(options));
+    await assertExistingSeed();
+    // Pin acceleration and all materialization to the same verified seed.
+    options = { ...options, base: existingCommit! };
+  }
   let template: Awaited<ReturnType<typeof prepareTemplate>>;
   let cloneBytes: number | undefined;
   if (options.enabled) {
@@ -327,16 +389,17 @@ export async function addManagedWorktree(options: CheckoutOptions): Promise<Chec
     template = undefined;
     cloneBytes = undefined;
   }
+  await assertExistingSeed();
   const added = await runGit(
     options.repoRoot,
     [
       "worktree",
       "add",
       ...(template || options.deferGitCheckout ? ["--no-checkout"] : []),
-      ...(options.branch ? ["-b", options.branch] : ["--detach"]),
+      ...(branch?.mode === "create" ? ["-b", branch.name] : branch ? [] : ["--detach"]),
       "--",
       options.destination,
-      options.base,
+      branch?.mode === "existing" ? branch.name : options.base,
     ],
     {
       ...gitOptions(options),
@@ -347,7 +410,12 @@ export async function addManagedWorktree(options: CheckoutOptions): Promise<Chec
       timeoutMs: WORKTREE_CHECKOUT_TIMEOUT_MS,
     },
   );
-  if (added.code !== 0 || !template) {
+  if (added.code !== 0) {
+    return added;
+  }
+  // A raced seed is retained, never reset or deleted to repair the postcondition.
+  await assertExistingSeed("registered");
+  if (!template) {
     return added;
   }
   const markerPath = path.join(options.destination, ".git");
@@ -405,11 +473,19 @@ export async function addManagedWorktree(options: CheckoutOptions): Promise<Chec
       ...gitOptions(options),
       timeoutMs: WORKTREE_CHECKOUT_TIMEOUT_MS,
     });
-    return { ...added, templateCloned: true };
   } catch (error) {
     // A stale allocator cannot roll back a checkout after lease takeover.
     // Preserve Git's registration for recovery if authority was revoked.
     assertOwned(options);
+    // The shared allocation lease does not exclude caller Git operations. A
+    // check before destructive fallback cannot protect edits made during it.
+    // Keep the original registration and partial files for caller-owned recovery.
+    if (existingRef) {
+      throw new Error(
+        "Caller-owned worktree clone failed; preserve its registration and partial checkout for recovery.",
+        { cause: error },
+      );
+    }
     if (marker) {
       await fs.rm(options.destination, { recursive: true, force: true });
       assertOwned(options);
@@ -442,6 +518,9 @@ export async function addManagedWorktree(options: CheckoutOptions): Promise<Chec
     }
     return checkout.code === 0 ? added : checkout;
   }
+  // Caller-state postconditions never enter clone cleanup or reset-and-retry.
+  await assertExistingSeed("registered");
+  return { ...added, templateCloned: true };
 }
 
 async function removeFailedCheckout(options: CheckoutOptions): Promise<void> {
@@ -451,8 +530,8 @@ async function removeFailedCheckout(options: CheckoutOptions): Promise<void> {
     ["worktree", "remove", "--force", options.destination],
     gitOptions(options),
   );
-  if (options.branch) {
+  if (options.branch?.mode === "create") {
     assertOwned(options);
-    await requireGit(options.repoRoot, ["branch", "-D", options.branch], gitOptions(options));
+    await requireGit(options.repoRoot, ["branch", "-D", options.branch.name], gitOptions(options));
   }
 }
