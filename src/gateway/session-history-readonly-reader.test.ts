@@ -27,7 +27,7 @@ import { readChatHistoryMessageId } from "./session-history-tail.js";
 
 async function withHistory(
   read: (fixture: {
-    target: PreparedSessionHistoryReadTarget;
+    target: PreparedSessionHistoryReadTarget & { transcript: { sessionKey: string } };
     database: ReturnType<typeof openOpenClawAgentDatabase>;
   }) => Promise<void>,
   options: { sharedStore?: boolean } = {},
