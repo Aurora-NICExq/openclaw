@@ -26,10 +26,28 @@ const repoRoot = resolve(repoRootArg);
 // repository selected by the wrapper, before any PR worktree is entered.
 process.chdir(repoRoot);
 const lockScript = fileURLToPath(new URL("./operation-lock.sh", import.meta.url));
+// Darwin's platform ps may not launch inside a sandbox. Use Python's standard
+// library only: lock acquisition happens before the PR application graph exists.
+// Fail before spawning the operation if that explicit tooling prerequisite or
+// genuine kernel identity is unavailable (never synthesize a birth timestamp).
+const darwinIdentityScript = fileURLToPath(
+  new URL("./darwin-process-identity.py", import.meta.url),
+);
+if (process.platform === "darwin") {
+  const identity = spawnSync(
+    "python3",
+    ["-I", "-S", "-B", darwinIdentityScript, "identity", String(process.pid)],
+    { encoding: "utf8", timeout: 5000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if (identity.status !== 0 || !identity.stdout?.trim()) {
+    console.error("Darwin PR locks require Python 3 with ctypes and readable libproc identity.");
+    if (identity.error) console.error(identity.error.message);
+    if (identity.stderr) console.error(identity.stderr.trim());
+    process.exit(1);
+  }
+}
 const lockSnapshotDir = mkdtempSync(join(tmpdir(), "openclaw-pr-lock-release-"));
 const lockScriptSnapshot = join(lockSnapshotDir, "operation-lock.sh");
-// merge-run can delete this revision's script directory before lock release.
-writeFileSync(lockScriptSnapshot, readFileSync(lockScript));
 process.once("exit", () => {
   try {
     rmSync(lockSnapshotDir, { force: true, recursive: true });
@@ -37,6 +55,17 @@ process.once("exit", () => {
     // Best-effort cleanup must not change the operation result.
   }
 });
+// merge-run can delete this revision's script directory before lock release.
+writeFileSync(lockScriptSnapshot, readFileSync(lockScript));
+if (process.platform === "darwin") {
+  // Keep the complete stdlib-only provider beside the release shell. No app
+  // node_modules, dynamic package loader or deleted source path is retained.
+  writeFileSync(
+    join(lockSnapshotDir, "darwin-process-identity.py"),
+    readFileSync(darwinIdentityScript),
+  );
+}
+
 const locks = new Map();
 let notificationBuffer = "";
 let discardingOversizedNotificationLine = false;

@@ -10,6 +10,14 @@ PR_OPERATION_COMPLETION_LEADER_PID=""
 # descendant must not be able to reopen the auto-release validation window.
 PR_OPERATION_VALIDATION_PHASE_STATE=unannounced
 
+# GC can remove this script's worktree before querying a later target. Retain
+# provider code, never process identities; every call still queries the kernel.
+# Optional loading keeps lock recovery independent of the Darwin runtime.
+PR_OPERATION_DARWIN_IDENTITY_SOURCE=""
+if [ -r "${BASH_SOURCE[0]%/*}/darwin-process-identity.py" ]; then
+  PR_OPERATION_DARWIN_IDENTITY_SOURCE=$(<"${BASH_SOURCE[0]%/*}/darwin-process-identity.py") || PR_OPERATION_DARWIN_IDENTITY_SOURCE=""
+fi
+
 is_canonical_pr_number() {
   local pr="$1"
   case "$pr" in ''|0|0*|*[!0-9]*) return 1 ;; esac
@@ -34,6 +42,13 @@ pr_operation_lock_zero_oid() {
 pr_operation_lock_process_identity() {
   local pid="$1"
   case "$pid" in ''|0|1|*[!0-9]*) return 1 ;; esac
+  local platform
+  platform=$(uname -s) || return 1
+  if [ "$platform" = Darwin ]; then
+    [ -n "$PR_OPERATION_DARWIN_IDENTITY_SOURCE" ] || return 1
+    python3 -I -S -B -c "$PR_OPERATION_DARWIN_IDENTITY_SOURCE" identity "$pid"
+    return $?
+  fi
   TZ=UTC0 LC_ALL=C ps -o state= -o lstart= -p "$pid" 2>/dev/null | awk '
     NF {
       state = $1
@@ -44,6 +59,21 @@ pr_operation_lock_process_identity() {
     }
     END { exit found ? 0 : 1 }
   '
+}
+
+# Use the same kernel backend for the leader check; failed queries never mint
+# completion authority. Other platforms retain their existing ps behavior.
+pr_operation_lock_process_group_id() {
+  local pid="$1"
+  case "$pid" in ''|0|1|*[!0-9]*) return 1 ;; esac
+  local platform
+  platform=$(uname -s) || return 1
+  if [ "$platform" = Darwin ]; then
+    [ -n "$PR_OPERATION_DARWIN_IDENTITY_SOURCE" ] || return 1
+    python3 -I -S -B -c "$PR_OPERATION_DARWIN_IDENTITY_SOURCE" pgid "$pid"
+  else
+    ps -o pgid= -p "$pid" 2>/dev/null
+  fi
 }
 
 pr_operation_lock_process_birth() {
@@ -164,7 +194,7 @@ if [ "${OPENCLAW_PR_DEDICATED_PROCESS_GROUP:-}" = "1" ]; then
     [ "${OPENCLAW_PR_LOCK_SUPERVISOR_PID:-}" = "$PPID" ] &&
     [ "${BASH_SUBSHELL:-0}" -eq 0 ]
   then
-    pr_operation_entry_pgid=$(ps -o pgid= -p "$$" 2>/dev/null || true)
+    pr_operation_entry_pgid=$(pr_operation_lock_process_group_id "$$" 2>/dev/null || true)
     pr_operation_entry_pgid="${pr_operation_entry_pgid//[[:space:]]/}"
     if [ "$pr_operation_entry_pgid" = "$$" ]; then
       install_pr_operation_completion_trap
