@@ -140,7 +140,9 @@ export async function createWorktreeSetupPlan({ rootDir, workload = "source", en
       }
     }
   }
-  const filterArgs = [...filters].sort().flatMap((filter) => ["--filter", filter]);
+  const filterArgs = [...filters]
+    .toSorted((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+    .flatMap((filter) => ["--filter", filter]);
   return {
     workload,
     packageManager: pkg.packageManager,

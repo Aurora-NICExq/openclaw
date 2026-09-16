@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -305,7 +306,7 @@ describe("explicit preparation input closure", () => {
     expect(plan.install).toEqual({
       command: "pnpm",
       args: [...expected]
-        .sort()
+        .toSorted((left, right) => (left < right ? -1 : left > right ? 1 : 0))
         .flatMap((filter) => ["--filter", filter])
         .concat(["install", "--frozen-lockfile"]),
     });
@@ -616,6 +617,7 @@ describe.each(["gateway", "full"])("%s preparation execution boundaries", (workl
     expect(result.status, result.stderr).toBe(29);
     const calls = fixture.calls();
     expect(calls).toHaveLength(4);
+    assert.ok(calls[2]);
     expect(calls[2].args).toContain("install");
     expect(calls[3]).toMatchObject(
       workload === "gateway"
@@ -631,6 +633,9 @@ describe.each(["gateway", "full"])("%s preparation execution boundaries", (workl
     expect(result.status, result.stderr).toBe(0);
     const calls = fixture.calls();
     expect(calls).toHaveLength(4);
+    assert.ok(calls[0]);
+    assert.ok(calls[1]);
+    assert.ok(calls[2]);
     expect(calls[0].args).toEqual(["--version"]);
     expect(calls[1].args).toEqual(["store", "path"]);
     expect(calls[2].kind).toBe("pnpm");
