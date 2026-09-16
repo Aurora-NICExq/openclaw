@@ -75,7 +75,9 @@ it.each(["cold", "warm", "policy", "receipt"] as const)(
       const retained = scope.run(target.database, () =>
         withScopedOpenClawAgentDatabaseReadOnly(({ db }) => db, target.database),
       );
-      if (!retained.found) throw new Error("expected retained history reader");
+      if (!retained.found) {
+        throw new Error("expected retained history reader");
+      }
       const connection = retained.value;
       const reader = createReadonlySessionHistoryReader(target);
       const read = () =>
@@ -355,7 +357,9 @@ it("keeps display history separate from the current-turn context cutoff", async 
       storePath: target.database.path,
       entryId: "requested-message",
     });
-    if (!anchor) throw new Error("expected requested message anchor");
+    if (!anchor) {
+      throw new Error("expected requested message anchor");
+    }
     const reader = createReadonlySessionHistoryReader(target);
     const admission = { ...anchor, logicalTurnId: "read-fence", role: "user" as const };
     const page = await runWithSessionTranscriptReadFence(admission, () => {

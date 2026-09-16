@@ -58,7 +58,9 @@ it.each([
       ]);
       await waitForSessionTranscriptProjection(target);
       const anchor = readActiveTranscriptEntryAnchor({ ...target, entryId: "admitted" });
-      if (!anchor) throw new Error("expected current-turn transcript anchor");
+      if (!anchor) {
+        throw new Error("expected current-turn transcript anchor");
+      }
       expect(anchor).toMatchObject({
         agentId: target.agentId,
         sessionId: target.sessionId,
