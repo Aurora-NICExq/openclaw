@@ -51,15 +51,20 @@ export async function resolveAttemptBootstrapContext<TBootstrapFile, TContextFil
   // but only a clean full bootstrap later records a durable completion marker.
   const shouldSkipBootstrapInjection =
     params.contextInjectionMode === "never" || isContinuationTurn;
-  const shouldRecordCompletedBootstrapTurn =
-    !shouldSkipBootstrapInjection &&
-    params.bootstrapContextMode !== "lightweight" &&
-    !isHeartbeatLifecycleRun &&
-    params.bootstrapMode === "full";
 
   const context = shouldSkipBootstrapInjection
     ? { bootstrapFiles: [], contextFiles: [] }
     : await params.resolveBootstrapContextForRun();
+
+  // Recording keys on what this turn actually injected. The workspace-pending
+  // "full" mode only holds during onboarding; keying the marker on it left
+  // completed workspaces (bootstrapMode "none") re-injecting every turn with
+  // no way to ever write the marker continuation-skip depends on (#149867).
+  const shouldRecordCompletedBootstrapTurn =
+    !shouldSkipBootstrapInjection &&
+    context.contextFiles.length > 0 &&
+    params.bootstrapContextMode !== "lightweight" &&
+    !isHeartbeatLifecycleRun;
 
   return {
     ...context,
